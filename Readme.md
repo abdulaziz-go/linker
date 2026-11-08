@@ -19,12 +19,12 @@ formats, libraries, and kernel/privileged pieces).
 
 | # | Document | What it covers |
 |---|----------|----------------|
-| 00 | [Product Requirements (PRD)](00-PRD.md) | Vision, goals, features, scope, roadmap |
-| 01 | [Core Architecture](01-architecture-core.md) | The common package, daemon, transport, discovery, pairing, security, kernel strategy |
-| 02 | [Software KVM](02-feature-software-kvm.md) | One keyboard/mouse across both screens |
-| 03 | [Universal Clipboard](03-feature-universal-clipboard.md) | Copy/paste of all content types, including the iPhone → Mac → Ubuntu chain |
-| 04 | [Notifications & Do Not Disturb](04-feature-notifications-dnd.md) | Mirrored notifications, synced focus/DND state |
-| 05 | [Camera & Microphone Sharing](05-feature-camera-microphone.md) | Mac camera/mic as real devices on Ubuntu |
+| 00 | [Product Requirements (PRD)](docs/PRD.md) | Vision, goals, features, scope, roadmap |
+| 01 | [Core Architecture](docs/core-linker.md) | The common package, daemon, transport, discovery, pairing, security, kernel strategy |
+| 02 | [Software KVM](docs/feature-kvm.md) | One keyboard/mouse across both screens |
+| 03 | [Universal Clipboard](docs/feature-cliboard.md) | Copy/paste of all content types, including the iPhone → Mac → Ubuntu chain |
+| 04 | [Notifications & Do Not Disturb](docs/feature-notifications-dnd.md) | Mirrored notifications, synced focus/DND state |
+| 05 | [Camera & Microphone Sharing](docs/feature-mic-cam.md) | Mac camera/mic as real devices on Ubuntu |
 
 ## Status
 
