@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Linker — launchd LaunchAgent.
+  Installed to ~/Library/LaunchAgents/io.linker.daemon.plist by
+  runbook/macos/install.sh, which replaces __HOME__ with your home directory.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.linker.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/linkerd</string>
+        <string>run</string>
+    </array>
+
+    <!-- Start at login and restart if it ever exits. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- Only in the logged-in GUI session (needed for pasteboard, camera, events). -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <!-- Interactive: no App Nap / timer coalescing (keeps KVM + camera latency low). -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/linker.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/linker.log</string>
+</dict>
+</plist>

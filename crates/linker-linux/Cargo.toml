@@ -1,0 +1,21 @@
+[package]
+name = "linker-linux"
+description = "Linux (Ubuntu/GNOME) backend for Linker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linker-proto.workspace = true
+linker-platform.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+libc.workspace = true
+image.workspace = true
+evdev = { version = "0.13", features = ["tokio"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+arboard = { version = "3", features = ["wayland-data-control", "image-data"] }
+x11rb = { version = "0.13", features = ["xfixes"] }
+openh264 = "0.6"
+futures-util = { version = "0.3", default-features = false }

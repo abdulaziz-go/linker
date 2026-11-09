@@ -1,0 +1,23 @@
+# Linker — systemd *user* service.
+# Installed to ~/.config/systemd/user/linker.service by runbook/linux/install.sh
+#   systemctl --user enable --now linker.service
+#   loginctl enable-linger "$USER"     # keep running without an active login
+[Unit]
+Description=Linker continuity daemon (Mac <-> Ubuntu link)
+Documentation=file://%h/.local/share/doc/linker/ubuntu.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/linkerd run
+Restart=always
+RestartSec=3
+# Logs: journalctl --user -u linker -f
+Environment=RUST_LOG=info
+# Graceful stop tells the peer immediately (QUIC CONNECTION_CLOSE).
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=default.target

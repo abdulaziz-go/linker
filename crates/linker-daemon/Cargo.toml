@@ -1,0 +1,25 @@
+[package]
+name = "linker-daemon"
+description = "linkerd: the Linker background daemon and CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "linkerd"
+path = "src/main.rs"
+
+[dependencies]
+linker-core.workspace = true
+linker-platform.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linker-linux.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+linker-macos.workspace = true

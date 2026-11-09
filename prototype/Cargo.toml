@@ -1,0 +1,15 @@
+[package]
+name = "linker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }     # async runtime (goroutine o'rni)
+serde = { version = "1", features = ["derive"] }    # struct ↔ JSON
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+gethostname = "0.5"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"

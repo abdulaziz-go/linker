@@ -1,0 +1,25 @@
+[package]
+name = "linker-macos"
+description = "macOS backend for Linker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+linker-proto.workspace = true
+linker-platform.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+libc.workspace = true
+image.workspace = true
+serde_json.workspace = true
+dirs = "6"
+plist = "1"
+rusqlite = "0.32"
+security-framework = "3"
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+core-graphics = { version = "0.24", features = ["highsierra"] }
+core-foundation = "0.10"

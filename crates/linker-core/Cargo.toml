@@ -1,0 +1,33 @@
+[package]
+name = "linker-core"
+description = "Platform-independent Linker core: discovery, transport, pairing, supervisor, features"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+linker-proto.workspace = true
+linker-platform.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem", "crypto"] }
+mdns-sd = "0.13"
+toml = "0.8"
+dirs = "6"
+gethostname = "0.5"
+bytes = "1"
+zstd = "0.13"
+rand = "0.8"
+x509-parser = "0.16"
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber.workspace = true
