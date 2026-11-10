@@ -10,9 +10,13 @@
 //! | KVM capture   | evdev (`/dev/input/event*`, `EVIOCGRAB` while captured)           |
 //! | KVM inject    | kernel `uinput` virtual keyboard + pointer                        |
 //! | camera sink   | H.264 decode (openh264) → `v4l2loopback` device "Linker Camera"   |
+//! | audio         | PipeWire streams: virtual source "Linker Microphone", virtual     |
+//! |               | sink "Linker Speaker" (+ plain capture/playback for `check`)      |
 //! | keystore      | Secret Service via `secret-tool` (libsecret)                      |
 
 #![cfg(target_os = "linux")]
+#[cfg(feature = "audio")]
+mod audio;
 
 mod camera;
 mod clipboard;
@@ -29,6 +33,10 @@ use linker_platform::*;
 use tokio::sync::mpsc;
 
 pub use session::DisplayServer;
+
+#[cfg(not(feature = "audio"))]
+const NO_AUDIO: &str =
+    "built without PipeWire audio (needs PipeWire >= 0.3.49 headers; rebuild with the `audio` feature)";
 
 pub struct LinuxBackend {
     clipboard: Arc<clipboard::Clip>,
@@ -102,5 +110,69 @@ impl PlatformBackend for LinuxBackend {
 
     fn camera_sink(&self, params: CameraParams) -> Cap<Box<dyn CameraSink>> {
         camera::open_sink(params)
+    }
+    fn audio_capture(
+        &self,
+        spec: AudioSpec,
+        sink: PcmSink,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        #[cfg(feature = "audio")]
+        {
+            audio::capture(spec, sink, ev)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = (spec, sink, ev);
+            Err(Unsupported::new(NO_AUDIO))
+        }
+    }
+    fn audio_playback(
+        &self,
+        spec: AudioSpec,
+        src: PcmSource,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        #[cfg(feature = "audio")]
+        {
+            audio::playback(spec, src, ev)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = (spec, src, ev);
+            Err(Unsupported::new(NO_AUDIO))
+        }
+    }
+    fn virtual_mic(
+        &self,
+        spec: AudioSpec,
+        src: PcmSource,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        #[cfg(feature = "audio")]
+        {
+            audio::virtual_mic(spec, src, ev)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = (spec, src, ev);
+            Err(Unsupported::new(NO_AUDIO))
+        }
+    }
+    fn virtual_speaker(
+        &self,
+        spec: AudioSpec,
+        sink: PcmSink,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        #[cfg(feature = "audio")]
+        {
+            audio::virtual_speaker(spec, sink, ev)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = (spec, sink, ev);
+            Err(Unsupported::new(NO_AUDIO))
+        }
     }
 }

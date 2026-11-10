@@ -1,8 +1,12 @@
 # Linker on Ubuntu — Runbook
 
-Ubuntu is the **KVM server** (it owns the physical keyboard/mouse) and the
+Ubuntu is the **KVM server** (it owns the physical keyboard/mouse), the
 **camera sink** (the Mac's camera appears here as `/dev/video10`,
-"Linker Camera"). Tested target: Ubuntu 22.04/24.04 LTS, GNOME, Wayland or X11.
+"Linker Camera") and the **audio sink**: the Mac's microphone appears as the
+input device **"Linker Microphone"**, and anything an app plays to the output
+device **"Linker Speaker"** comes out of the Mac's speakers/headphones.
+Tested target: Ubuntu 24.04 LTS, GNOME, Wayland or X11 (camera/KVM also 22.04;
+audio needs PipeWire ≥ 0.3.49, the default sound server since Ubuntu 22.10).
 
 > Do the macOS side too ([macos.md](macos.md)). Pairing needs both machines.
 
@@ -16,6 +20,7 @@ Ubuntu is the **KVM server** (it owns the physical keyboard/mouse) and the
 | `sudo` rights (once) | kernel modules, udev rule, packages |
 | Rust toolchain (stable) | build `linkerd` |
 | Network allowing device-to-device traffic | many "guest" Wi-Fi networks block it (see Troubleshooting) |
+| PipeWire as the sound server (Ubuntu ≥ 22.10 default) | audio: `pactl info` must say `Server Name: PulseAudio (on PipeWire …)` |
 
 Install Rust if needed:
 
@@ -34,7 +39,9 @@ From the repository root:
 
 What it does (all idempotent — rerun after `git pull` to upgrade):
 
-1. `apt install build-essential pkg-config v4l2loopback-dkms v4l-utils libsecret-tools linux-headers-$(uname -r)`
+1. `apt install build-essential pkg-config cmake libpipewire-0.3-dev libspa-0.2-dev libclang-dev pulseaudio-utils v4l2loopback-dkms v4l-utils libsecret-tools linux-headers-$(uname -r)`
+   (cmake builds the bundled Opus codec; the PipeWire/SPA headers and libclang
+   are for the PipeWire bindings; `pulseaudio-utils` gives `pactl` for checks)
 2. Loads **uinput** and **v4l2loopback** now and at every boot:
    - `/etc/modules-load.d/linker.conf` → `uinput`, `v4l2loopback`
    - `/etc/modprobe.d/linker-v4l2loopback.conf` →
@@ -55,7 +62,7 @@ membership takes effect.
 <details><summary>Manual equivalent (if you prefer to run each step yourself)</summary>
 
 ```bash
-sudo apt install -y build-essential pkg-config v4l2loopback-dkms v4l-utils libsecret-tools linux-headers-$(uname -r)
+sudo apt install -y build-essential pkg-config cmake libpipewire-0.3-dev libspa-0.2-dev libclang-dev pulseaudio-utils v4l2loopback-dkms v4l-utils libsecret-tools linux-headers-$(uname -r)
 echo -e "uinput\nv4l2loopback" | sudo tee /etc/modules-load.d/linker.conf
 echo 'options v4l2loopback devices=1 video_nr=10 card_label="Linker Camera" exclusive_caps=1' | sudo tee /etc/modprobe.d/linker-v4l2loopback.conf
 sudo modprobe uinput
@@ -95,8 +102,20 @@ Every line should be `[ OK ]`. Typical output on a fully set-up machine:
   [ OK ] sleep/wake events      available
   [ OK ] kvm capture (server)   screen (1920.0, 1080.0)
   [ OK ] camera sink            /dev/video10 via openh264 (software)
+  [ OK ] audio virtual speaker  "Linker Speaker (check)" receives app audio — 48000 Hz, period 128 frames (2.67 ms)
+  [ OK ] audio virtual mic      "Linker Microphone (check)" delivers to recording apps — 48000 Hz, period 128 frames (2.67 ms)
+  [ OK ] audio loop (local)     speaker → Opus → jitter buffer → mic: latency 11.8 ms | 4.0s recorded, gaps 0, underruns 0, PLC 0 of 1098 frames | buffer 6 ms
   [ OK ] daemon                 running (/run/user/1000/linker.sock)
+  [ OK ] audio live             audio mic     : recv playing | buf   7ms (target   6) | … | latency 21 ms
 ```
+
+The audio probe creates temporary "(check)" copies of the two virtual
+devices (the daemon's own devices are untouched), plays a tone into the
+speaker like an app would, sends it through the real audio engine (Opus,
+redundancy, reorder, adaptive jitter buffer) and records it back from the
+microphone like Zoom would — reporting sample rate, callback period,
+measured latency and any loss/gaps. `audio live` lines appear while the
+daemon is streaming (network loss and latency over the real link).
 
 A `[FAIL]` line says exactly what is missing (group membership, module…).
 
@@ -132,6 +151,23 @@ after reboots, sleep, Wi-Fi changes). Only this paired Mac can connect.
 | **Do Not Disturb** | Toggle DND in the GNOME quick settings; the Mac follows (and vice versa). | `[dnd]` |
 | **KVM** | Push the mouse past the **right** edge of your screen → the pointer appears on the Mac; your keyboard types there. Move back past the Mac's left edge to return. **Ctrl+Alt+Shift+Esc** releases control immediately. | `[kvm] peer_edge = "right"` (left/top/bottom), `panic_hotkey`, `screen_width/height` |
 | **Camera** | In any app (Firefox, Chrome, Zoom, OBS, Cheese…) pick **"Linker Camera"**. The Mac camera turns on while an app uses it and off ~5 s after. | `[camera] width/height/fps/bitrate_kbps`, `mode = "on_demand" \| "always"` |
+| **Microphone** (Mac → Ubuntu) | In the app pick the microphone **"Linker Microphone"**. The Mac's microphone (orange dot in the Mac menu bar) turns on while an app records from it and off ~5 s after. | `[audio] mic`, `mic_mode = "on_demand" \| "always"`, `mic_name`; codec/buffer: `bitrate_kbps`, `frame_ms`, `redundancy`, `min/max_buffer_ms` (this machine plays the mic stream, so its settings apply) |
+| **Speaker** (Ubuntu → Mac) | In the app pick the speaker/output **"Linker Speaker"**. That app's audio plays on the Mac; everything else on Ubuntu keeps using your normal output (no echo, no double audio). | `[audio] speaker`, `speaker_name` (codec settings of this stream are in the **Mac's** config) |
+
+### Zoom (camera + microphone + speaker from the Mac)
+
+1. Zoom → **Settings → Video → Camera**: **Linker Camera**.
+2. Zoom → **Settings → Audio → Microphone**: **Linker Microphone**;
+   **Speaker**: **Linker Speaker**. Turn *Automatically adjust microphone
+   volume* off if the level pumps; the Mac's own mic level is set on the Mac.
+3. Optional: *Original sound for musicians* / *Suppress background noise: Low*
+   — the stream is already full-band 48 kHz.
+
+Browsers (Meet, Teams, Jitsi): pick the same three devices in the site's
+settings (Chrome/Firefox list them like USB devices). Any PulseAudio/PipeWire
+app works the same way; `pavucontrol` can move a running app to "Linker Speaker".
+Use headphones on the Mac in calls, or the Mac's speakers will feed the Mac's
+microphone (like any speakerphone).
 
 Ctrl on this keyboard acts as ⌘ on the Mac (so Ctrl+C / Ctrl+V work as
 expected). Disable with `[kvm] swap_ctrl_cmd = false` in the **Mac's** config.
@@ -148,13 +184,35 @@ paired with : MacBook  [8f90b5339349]
 link        : Connected
 peer        : MacBook at 192.168.1.23:47800  rtt 2.1 ms  up 312s
 features:
+  audio          sink: Linker Microphone ready, Linker Speaker ready
   camera         sink: /dev/video10 ready (waiting for an app / the Mac)
   clipboard      active
   dnd            active (bidirectional)
   kvm            server: local (screen 1920x1080, peer on Right edge)
   notifications  show-only (capture: …)
   power          active (OS sleep/wake events)
+audio mic     : recv playing | buf   7ms (target   6) | gap   6ms | recovered 0 PLC 0 late 0 | underruns 0 trims 0 | speed +0.0% | loss 0.0% | 256 kbps 5 ms x3 | latency 21 ms | cb 2.8ms | Linker Microphone
+audio speaker : send streaming | 200 pkt/s 810 kbps | peak -18.5 dBFS | peer buf 7ms (target 6) PLC 0 underruns 0 | 256 kbps 5 ms x3 | latency 22 ms | Linker Speaker
 ```
+
+Audio lines (modelled on audiobridge's stats line), per stream:
+
+| Field | Meaning |
+|---|---|
+| `recv`/`send` | this machine plays (decodes) / captures (encodes) the stream |
+| `buf … (target …)` | adaptive jitter buffer level / the target it chose (= added latency). The target is the largest packet gap seen in the last 30 s, within `min_buffer_ms`..`max_buffer_ms` |
+| `gap` | largest pause between packets in the last 30 s (normal: ≤ 10–25 ms on good Wi-Fi) |
+| `recovered` | lost/late packets rebuilt from the copies carried by later packets (inaudible) |
+| `PLC` | frames that never arrived; Opus concealed them (no silence, no click) |
+| `late` | packets that arrived after their audio was played (harmless) |
+| `underruns` | the buffer ran dry (audible); 1–2 right after start = adaptation, should then stay constant |
+| `trims` | a burst > 250 ms was cut with a crossfade |
+| `speed` | playback speed tweak (≤ ±0.5 %) absorbing clock drift between the machines |
+| `loss` | datagrams lost on the network in the last second (before redundancy) |
+| `… kbps 5 ms x3` | Opus bitrate (automatic: 128 → 256 on a clean link), frame length, copies per packet |
+| `latency` | capture → playout (network part measured with the clock offset from the heartbeats) |
+| `cb` | largest gap between audio callbacks (PipeWire / CoreAudio) |
+| `peak` (send) | loudest captured sample — `-inf dBFS` = digital silence |
 
 Feature-by-feature:
 
@@ -166,6 +224,14 @@ Feature-by-feature:
   Open <https://webcamtests.com> (or `ffplay /dev/video10`) and choose
   "Linker Camera": the Mac's camera light turns on and the live picture
   appears. `linkerd status` then shows fps, latency and loss.
+- **Audio devices**: `pactl list short sources | grep linker` shows
+  `linker_microphone`, `pactl list short sinks | grep linker` shows
+  `linker_speaker` — that's exactly what Zoom/Chrome enumerate.
+- **Microphone**: `pw-record --target linker_microphone /tmp/mic.wav` (talk on
+  the Mac, Ctrl+C, then `pw-play /tmp/mic.wav`). The Mac's orange mic dot is
+  on while recording. Or Zoom → Settings → Audio → *Test Mic*.
+- **Speaker**: `pw-play --target linker_speaker /usr/share/sounds/alsa/Front_Center.wav`
+  → heard on the Mac. Or Zoom → *Test Speaker* with "Linker Speaker" selected.
 - **Clipboard**: `echo hello | xclip -sel clip` (or copy in any app) → ⌘V on
   the Mac. Copy a screenshot on the Mac (⌘⇧⌃4) → paste into GIMP/LibreOffice here.
 - **Notifications**: send yourself an iMessage / Mail on the Mac → banner here.
@@ -189,4 +255,12 @@ Feature-by-feature:
 | Pairing codes differ | Don't accept. Run `linkerd pair` again on both; ensure no other machine is in pairing mode on the network. |
 | No notifications appear | GNOME DND on? (mirrored banners are suppressed while DND is on — see `when_dnd`). Test: `linkerd check`. |
 | `linkerd status`: *cannot reach linkerd* | Service not running: `systemctl --user status linker`. |
+| Audio: no "Linker Microphone"/"Linker Speaker" in apps | `linkerd status` → `audio` feature line. `pactl info` must report *on PipeWire* (PulseAudio-only systems are not supported: `sudo apt install pipewire-audio` and re-login). Check `systemctl --user status pipewire pipewire-pulse wireplumber`. Linker recreates its devices every 2 s if PipeWire restarts. |
+| Audio: build fails (`cmake`, `libspa-sys`, `pipewire-sys`, `clang`) | `sudo apt install cmake libpipewire-0.3-dev libspa-0.2-dev libclang-dev`. |
+| Audio: Linker Microphone is silent | Ubuntu `linkerd status`: `audio mic : … peer Unavailable (…)` explains the Mac side (permission denied → see the Mac runbook; `disabled` → `[audio] mic = true` on the Mac). `waiting for audio` → is the Mac awake? The Mac-side `peak -inf dBFS` = the Mac's input is muted. |
+| Audio: crackles / dropouts | `linkerd status`: rising `underruns` with large `gap` = Wi-Fi stalls (see the Wi-Fi tips in the macOS runbook; the buffer grows automatically up to `max_buffer_ms`). Rising `PLC` with `loss` > 5 % = bad link: raise `[audio] redundancy = 3`, or `frame_ms = 10` (fewer packets). `cb` ≫ 3 ms = this machine is overloaded. |
+| Audio: too much delay | `buf` / `target` show the buffer; it follows the worst packet gap of the last 30 s. On a clean wired/5 GHz link it stays at `min_buffer_ms` (6 ms). Lower `[audio] max_buffer_ms` to cap it (at the cost of dropouts on bad Wi-Fi). |
+| Audio: the Mac's mic turns on although no call is running | Something is recording from "Linker Microphone". Level meters count too: pavucontrol's *Input Devices* tab or GNOME Settings → Sound with "Linker Microphone" selected keep it open — close them. `pw-top` shows who is linked. Turn sharing off entirely with `[audio] mic = false` (on either machine). |
+| Audio: echo of the remote party | The Mac's speakers are feeding its microphone — use headphones on the Mac, or enable the app's echo cancellation. |
+| Audio: test the whole path on one machine | `./runbook/audio-e2e.sh 60` (developer tool: two local daemons, PipeWire on both ends; scenarios `sleepwake`, `restart`, `impair`). |
 | Start over | `./runbook/linux/uninstall.sh --purge`, then install and pair again. |

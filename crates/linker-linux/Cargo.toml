@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# PipeWire audio ("Linker Microphone" / "Linker Speaker"). Needs PipeWire
+# >= 0.3.49 headers (Ubuntu >= 22.10). Without it (Ubuntu 22.04) audio
+# reports "unsupported" and everything else works.
+default = ["audio"]
+audio = ["dep:pipewire"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 linker-proto.workspace = true
 linker-platform.workspace = true
@@ -18,4 +25,8 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 arboard = { version = "3", features = ["wayland-data-control", "image-data"] }
 x11rb = { version = "0.13", features = ["xfixes"] }
 openh264 = "0.6"
+pipewire = { version = "0.10", features = ["v0_3_49"], optional = true }  # Buffer::requested: PipeWire >= 0.3.49
 futures-util = { version = "0.3", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+linker-audio = { workspace = true, features = ["codec"] }

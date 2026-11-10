@@ -30,6 +30,11 @@ if [[ $DO_BUILD -eq 1 ]]; then
   fi
   command -v cargo >/dev/null || { echo "!! Rust not found. Install: curl https://sh.rustup.rs -sSf | sh"; exit 1; }
   xcode-select -p >/dev/null 2>&1 || { echo "!! Install the Xcode Command Line Tools: xcode-select --install"; exit 1; }
+  # cmake builds the bundled libopus (audio codec).
+  if ! command -v cmake >/dev/null; then
+    if command -v brew >/dev/null; then brew install cmake
+    else echo "!! cmake not found. Install Homebrew (https://brew.sh) then: brew install cmake"; exit 1; fi
+  fi
   (cd "$REPO" && cargo build --release -p linker-daemon)
 fi
 

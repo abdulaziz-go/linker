@@ -11,9 +11,10 @@ Scripts:
 
 | Script | Purpose |
 |---|---|
-| `linux/install.sh` | packages, `uinput` + `v4l2loopback` ("Linker Camera"), udev/groups, firewall, build, systemd user service, linger |
+| `linux/install.sh` | packages (incl. PipeWire/Opus build deps), `uinput` + `v4l2loopback` ("Linker Camera"), udev/groups, firewall, build, systemd user service, linger |
 | `linux/uninstall.sh` | remove service/binary (`--purge` config+pairing, `--system` module/udev config) |
-| `macos/install.sh` | build, install, sign, LaunchAgent |
+| `macos/install.sh` | cmake (Homebrew), build, install, sign, LaunchAgent |
+| `audio-e2e.sh` | developer tool: two local daemons + PipeWire, both audio flows end to end (`steady`, `sleepwake`, `restart`, `impair`) |
 | `macos/uninstall.sh` | remove agent/binary (`--purge` config, Keychain identity, pairing) |
 
 Measurements and how to reproduce them: [measurements.md](measurements.md).
@@ -21,8 +22,8 @@ Measurements and how to reproduce them: [measurements.md](measurements.md).
 ## Quick reference
 
 ```text
-linkerd status        link state, peer, per-feature health, camera stats
-linkerd check         probe OS capabilities and permissions
+linkerd status        link state, peer, per-feature health, camera + audio stats
+linkerd check         probe OS capabilities and permissions (incl. audio devices, latency, loss)
 linkerd pair          pair with the other machine (both sides)
 linkerd unpair        forget the paired machine
 linkerd id            show device id and file locations

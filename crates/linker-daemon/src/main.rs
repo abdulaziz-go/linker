@@ -1,5 +1,7 @@
 //! `linkerd` — the Linker daemon and its command-line interface.
 
+mod audio_check;
+
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +14,7 @@ use linker_core::Daemon;
 use linker_platform::PlatformBackend;
 
 const USAGE: &str = "\
-linkerd — Linker continuity daemon (clipboard, notifications, DND, KVM, camera)
+linkerd — Linker continuity daemon (clipboard, notifications, DND, KVM, camera, audio)
 
 USAGE:
     linkerd [OPTIONS] [COMMAND]
@@ -412,9 +414,38 @@ async fn check(paths: &Paths) -> anyhow::Result<()> {
         }
     }
 
+    // Audio (microphone + speaker sharing)
+    if cfg.audio.enabled {
+        let source = match cfg.audio.role.as_str() {
+            "source" => true,
+            "sink" => false,
+            _ => cfg!(target_os = "macos"),
+        };
+        let (b2, acfg) = (b.clone(), cfg.audio.clone());
+        tokio::task::spawn_blocking(move || {
+            if source {
+                audio_check::check_devices(&*b2, &acfg)
+            } else {
+                audio_check::check_virtual(&*b2, &acfg)
+            }
+        })
+        .await?;
+    } else {
+        println!("  [ -- ] {:<22} disabled in config", "audio");
+    }
+
     // Daemon reachable?
     match ControlClient::connect(&paths.socket).await {
-        Ok(_) => ok("daemon", format!("running ({})", paths.socket.display())),
+        Ok(mut c) => {
+            ok("daemon", format!("running ({})", paths.socket.display()));
+            if c.send(&Request::Status).await.is_ok() {
+                if let Ok(Some(v)) = c.recv().await {
+                    if let Ok(s) = serde_json::from_value::<linker_core::status::Status>(v) {
+                        audio_check::live(&s);
+                    }
+                }
+            }
+        }
         Err(_) => println!("  [ -- ] {:<22} not running", "daemon"),
     }
     tokio::time::sleep(Duration::from_millis(300)).await; // let async probes print

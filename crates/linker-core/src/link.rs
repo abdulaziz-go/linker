@@ -8,7 +8,9 @@
 //!   order, as length-prefixed frames.
 //! * **Bulk streams** — further bidirectional streams, one per heavy
 //!   clipboard pull, so a large image never delays a keystroke.
-//! * **Datagrams** — camera video fragments (unreliable; late = dropped).
+//! * **Datagrams** — camera video fragments and audio packets (unreliable;
+//!   late = dropped), demultiplexed by their first byte into separate queues
+//!   so audio never waits behind video.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -159,6 +161,8 @@ pub struct Router {
     pub kvm: mpsc::Sender<Message>,
     pub camera: mpsc::Sender<Message>,
     pub camera_dgram: mpsc::Sender<Bytes>,
+    pub audio: mpsc::Sender<Message>,
+    pub audio_dgram: mpsc::Sender<Bytes>,
 }
 
 pub struct RouterRx {
@@ -168,6 +172,8 @@ pub struct RouterRx {
     pub kvm: mpsc::Receiver<Message>,
     pub camera: mpsc::Receiver<Message>,
     pub camera_dgram: mpsc::Receiver<Bytes>,
+    pub audio: mpsc::Receiver<Message>,
+    pub audio_dgram: mpsc::Receiver<Bytes>,
 }
 
 pub fn router() -> (Router, RouterRx) {
@@ -177,6 +183,9 @@ pub fn router() -> (Router, RouterRx) {
     let (d, dr) = mpsc::channel(4096);
     let (e, er) = mpsc::channel(64);
     let (f, fr) = mpsc::channel(2048);
+    let (g, gr) = mpsc::channel(64);
+    // ~200 packets/s per stream at 5 ms frames: ~2.5 s of headroom.
+    let (h, hr) = mpsc::channel(512);
     (
         Router {
             clipboard: a,
@@ -185,6 +194,8 @@ pub fn router() -> (Router, RouterRx) {
             kvm: d,
             camera: e,
             camera_dgram: f,
+            audio: g,
+            audio_dgram: h,
         },
         RouterRx {
             clipboard: ar,
@@ -193,6 +204,8 @@ pub fn router() -> (Router, RouterRx) {
             kvm: dr,
             camera: er,
             camera_dgram: fr,
+            audio: gr,
+            audio_dgram: hr,
         },
     )
 }
@@ -319,14 +332,21 @@ pub async fn run_session(
         })
     };
 
-    // Datagram receiver.
+    // Datagram receiver: audio and camera go to separate queues.
     let dgrams = {
         let conn = conn.clone();
-        let tx = router.camera_dgram.clone();
+        let cam = router.camera_dgram.clone();
+        let audio = router.audio_dgram.clone();
         tokio::spawn(async move {
             while let Ok(d) = conn.read_datagram().await {
                 // Never block the network on a slow sink: drop instead.
-                let _ = tx.try_send(d);
+                if d.first()
+                    .is_some_and(|b| linker_audio::proto::is_audio_tag(*b))
+                {
+                    let _ = audio.try_send(d);
+                } else {
+                    let _ = cam.try_send(d);
+                }
             }
         })
     };
@@ -411,6 +431,12 @@ async fn dispatch(link: &Link, router: &Router, msg: Message) {
         | Message::CamStatus(_)
         | Message::CamFeedback(_)) => {
             let _ = router.camera.send(m).await;
+        }
+        m @ (Message::AudioStart(_)
+        | Message::AudioStop(_)
+        | Message::AudioStatus(_)
+        | Message::AudioFeedback(_)) => {
+            let _ = router.audio.send(m).await;
         }
         Message::ClipPull(_) | Message::ClipBlob(_) => {
             tracing::debug!("bulk message on control stream ignored");

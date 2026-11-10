@@ -42,6 +42,7 @@ pub struct Config {
     pub dnd: DndConfig,
     pub kvm: KvmConfig,
     pub camera: CameraConfig,
+    pub audio: AudioConfig,
 }
 
 impl Default for Config {
@@ -60,6 +61,7 @@ impl Default for Config {
             dnd: DndConfig::default(),
             kvm: KvmConfig::default(),
             camera: CameraConfig::default(),
+            audio: AudioConfig::default(),
         }
     }
 }
@@ -256,10 +258,150 @@ impl Default for CameraConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioMode {
+    /// Run the Mac microphone only while an Ubuntu app records from
+    /// "Linker Microphone".
+    OnDemand,
+    /// Stream the microphone whenever the link is up.
+    Always,
+}
+
+/// Audio sharing. Each stream is configured on the machine that *plays* it
+/// (it requests the stream): the microphone stream's codec/buffer settings
+/// come from Ubuntu's file, the speaker stream's from the Mac's file.
+/// Device selection is always local.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AudioConfig {
+    pub enabled: bool,
+    /// "auto" (macOS = source: real mic + speakers; Linux = sink: virtual
+    /// "Linker Microphone"/"Linker Speaker"), "source" or "sink".
+    pub role: String,
+    /// Flow A: Mac microphone → Ubuntu "Linker Microphone".
+    pub mic: bool,
+    /// Flow B: Ubuntu "Linker Speaker" → Mac output.
+    pub speaker: bool,
+    /// (Ubuntu) when to run the Mac microphone.
+    pub mic_mode: AudioMode,
+    /// Opus bitrate for streams this machine receives; 0 = automatic
+    /// (starts at 128, rises to `max_bitrate_kbps` on a clean network).
+    pub bitrate_kbps: u32,
+    pub min_bitrate_kbps: u32,
+    pub max_bitrate_kbps: u32,
+    /// Opus frame length: 2.5, 5, 10 or 20 ms (smaller = lower latency, more packets).
+    pub frame_ms: f64,
+    /// Previous frames repeated in each packet (0..=3): this many
+    /// consecutive lost packets are recovered without retransmission.
+    pub redundancy: u8,
+    /// Opus complexity 0..=10.
+    pub complexity: u8,
+    /// Adaptive jitter buffer bounds (ms) for streams played here.
+    pub min_buffer_ms: u32,
+    pub max_buffer_ms: u32,
+    /// Audio callback period (ms) for devices opened here; 2.67 = 128 frames.
+    pub period_ms: f64,
+    /// (Mac) microphone to use; default = system default input.
+    pub input_device: Option<String>,
+    /// (Mac) output to play the speaker stream on; default = system default output.
+    pub output_device: Option<String>,
+    /// (Ubuntu) names shown to apps.
+    pub mic_name: String,
+    pub speaker_name: String,
+    /// (Ubuntu) PipeWire `node.name`s of the virtual devices (what
+    /// `pactl list short sources/sinks` and `--target` use).
+    pub mic_node: String,
+    pub speaker_node: String,
+    /// (Mac) close the output device after this long without speaker audio.
+    pub idle_close_secs: u64,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        AudioConfig {
+            enabled: true,
+            role: "auto".into(),
+            mic: true,
+            speaker: true,
+            mic_mode: AudioMode::OnDemand,
+            bitrate_kbps: 0,
+            min_bitrate_kbps: 64,
+            max_bitrate_kbps: 256,
+            frame_ms: 5.0,
+            redundancy: 2,
+            complexity: 8,
+            min_buffer_ms: 6,
+            max_buffer_ms: 200,
+            period_ms: 2.67,
+            input_device: None,
+            output_device: None,
+            mic_name: "Linker Microphone".into(),
+            speaker_name: "Linker Speaker".into(),
+            mic_node: "linker_microphone".into(),
+            speaker_node: "linker_speaker".into(),
+            idle_close_secs: 10,
+        }
+    }
+}
+
+impl AudioConfig {
+    /// Check ranges; returns a human readable problem.
+    pub fn validate(&self) -> Result<(), String> {
+        if ![2.5, 5.0, 10.0, 20.0].contains(&self.frame_ms) {
+            return Err(format!(
+                "[audio] frame_ms must be 2.5, 5, 10 or 20 (got {})",
+                self.frame_ms
+            ));
+        }
+        if self.redundancy > 3 {
+            return Err("[audio] redundancy must be 0..=3".into());
+        }
+        if self.complexity > 10 {
+            return Err("[audio] complexity must be 0..=10".into());
+        }
+        if self.min_bitrate_kbps < 6 || self.min_bitrate_kbps > self.max_bitrate_kbps {
+            return Err("[audio] need 6 <= min_bitrate_kbps <= max_bitrate_kbps".into());
+        }
+        if self.max_bitrate_kbps > 510 {
+            return Err("[audio] max_bitrate_kbps must be <= 510".into());
+        }
+        if self.bitrate_kbps != 0 && !(6..=510).contains(&self.bitrate_kbps) {
+            return Err("[audio] bitrate_kbps must be 0 (auto) or 6..=510".into());
+        }
+        if self.min_buffer_ms > self.max_buffer_ms || self.max_buffer_ms > 1000 {
+            return Err("[audio] need min_buffer_ms <= max_buffer_ms <= 1000".into());
+        }
+        if !(0.5..=50.0).contains(&self.period_ms) {
+            return Err("[audio] period_ms must be 0.5..=50".into());
+        }
+        if self.idle_close_secs < 2 {
+            return Err("[audio] idle_close_secs must be >= 2".into());
+        }
+        if self.mic_node.is_empty()
+            || self.speaker_node.is_empty()
+            || self.mic_node == self.speaker_node
+        {
+            return Err("[audio] mic_node and speaker_node must be non-empty and different".into());
+        }
+        if !matches!(self.role.as_str(), "auto" | "source" | "sink") {
+            return Err("[audio] role must be \"auto\", \"source\" or \"sink\"".into());
+        }
+        Ok(())
+    }
+}
+
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
-            Ok(s) => toml::from_str(&s).with_context(|| format!("parsing {}", path.display())),
+            Ok(s) => {
+                let c: Config =
+                    toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
+                c.audio
+                    .validate()
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+                Ok(c)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
@@ -380,6 +522,32 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"# Linker configuration. All keys are op
 # mode = "on_demand"        # "on_demand" | "always"
 # video_device = "/dev/video10"
 # jitter_ms = 20
+
+[audio]
+# Flow A: Mac microphone -> Ubuntu "Linker Microphone".
+# Flow B: Ubuntu "Linker Speaker" -> Mac speakers/headphones.
+# A stream's codec/buffer settings are taken from the machine that PLAYS it.
+# enabled = true
+# role = "auto"             # "auto" (Mac = source, Ubuntu = sink) | "source" | "sink"
+# mic = true
+# speaker = true
+# mic_mode = "on_demand"    # "on_demand" (Mac mic only while an Ubuntu app records) | "always"
+# bitrate_kbps = 0          # 0 = automatic (128, rises to max on a clean network)
+# min_bitrate_kbps = 64
+# max_bitrate_kbps = 256
+# frame_ms = 5              # 2.5 | 5 | 10 | 20
+# redundancy = 2            # previous frames repeated per packet (0..3)
+# complexity = 8
+# min_buffer_ms = 6         # adaptive jitter buffer bounds
+# max_buffer_ms = 200
+# period_ms = 2.67          # audio callback period (128 frames)
+# input_device = "MacBook Pro Microphone"   # Mac; default = system default input
+# output_device = "MacBook Pro Speakers"    # Mac; default = system default output
+# mic_name = "Linker Microphone"            # Ubuntu: names shown in apps
+# speaker_name = "Linker Speaker"
+# mic_node = "linker_microphone"            # Ubuntu: PipeWire node names
+# speaker_node = "linker_speaker"
+# idle_close_secs = 10      # Mac: release the output device when idle (>= 2)
 "#;
 
 #[cfg(test)]
@@ -397,6 +565,9 @@ mod tests {
     fn commented_template_parses() {
         let c: Config = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
         assert_eq!(c.camera.width, 1280);
+        assert!(DEFAULT_CONFIG_TOML.contains("[audio]"));
+        assert!(DEFAULT_CONFIG_TOML.contains("# mic_node"));
+        c.audio.validate().unwrap();
     }
 
     #[test]
@@ -408,6 +579,50 @@ mod tests {
         assert_eq!(c.kvm.role, KvmRole::Client);
         assert_eq!(Edge::from(c.kvm.peer_edge), Edge::Left);
         assert_eq!(c.kvm_role(), KvmRole::Client);
+    }
+
+    #[test]
+    fn audio_defaults_and_overrides() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.audio.enabled && c.audio.mic && c.audio.speaker);
+        assert_eq!(c.audio.frame_ms, 5.0);
+        assert_eq!(c.audio.redundancy, 2);
+        assert_eq!(c.audio.mic_mode, AudioMode::OnDemand);
+        c.audio.validate().unwrap();
+        let c: Config = toml::from_str(
+            "[audio]\nframe_ms = 2.5\nbitrate_kbps = 192\nmic_mode = \"always\"\ninput_device = \"USB Mic\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.audio.frame_ms, 2.5);
+        assert_eq!(c.audio.bitrate_kbps, 192);
+        assert_eq!(c.audio.mic_mode, AudioMode::Always);
+        assert_eq!(c.audio.input_device.as_deref(), Some("USB Mic"));
+        c.audio.validate().unwrap();
+        // integer frame_ms is accepted by TOML as float? (toml requires 5.0 or 5)
+        let c: Config = toml::from_str("[audio]\nframe_ms = 10\n").unwrap();
+        assert_eq!(c.audio.frame_ms, 10.0);
+    }
+
+    #[test]
+    fn audio_validation_rejects_bad_values() {
+        for bad in [
+            "frame_ms = 7",
+            "redundancy = 4",
+            "complexity = 11",
+            "min_buffer_ms = 300\nmax_buffer_ms = 200",
+            "bitrate_kbps = 2",
+            "role = \"both\"",
+            "period_ms = 0",
+            "idle_close_secs = 0",
+            "mic_node = \"x\"\nspeaker_node = \"x\"",
+        ] {
+            let c: Config = toml::from_str(&format!("[audio]\n{bad}\n")).unwrap();
+            assert!(c.audio.validate().is_err(), "{bad} must be rejected");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[audio]\nframe_ms = 3\n").unwrap();
+        assert!(Config::load(&p).is_err(), "load validates [audio]");
     }
 
     #[test]

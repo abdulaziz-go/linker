@@ -23,3 +23,8 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 core-graphics = { version = "0.24", features = ["highsierra"] }
 core-foundation = "0.10"
+linker-audio.workspace = true
+cpal = "0.18"
+# Same crates/features cpal already uses: HAL queries cpal does not expose.
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }

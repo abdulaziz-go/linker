@@ -9,10 +9,15 @@
 //! | power         | `NSWorkspace` will-sleep / did-wake notifications               |
 //! | KVM           | `CGEventTap` capture, `CGEventPost` injection                   |
 //! | camera source | AVFoundation capture → VideoToolbox H.264 (hardware, real-time) |
+//! | audio capture | `cpal` / CoreAudio default (or named) input, after the TCC      |
+//! |               | microphone check; device rate/channels → 48 kHz stereo `i16`    |
+//! | audio playback| `cpal` / CoreAudio default (or named) output, ≈128-frame fixed  |
+//! |               | buffer, 48 kHz stereo `i16` → device rate/channels              |
 //! | keystore      | login Keychain (generic password)                               |
 
 #![cfg(target_os = "macos")]
 
+mod audio;
 mod camera;
 mod dnd;
 mod ffi;
@@ -102,5 +107,22 @@ impl PlatformBackend for MacBackend {
         tx: mpsc::Sender<CameraEvent>,
     ) -> Cap<Box<dyn CameraSource>> {
         camera::start(params, tx)
+    }
+
+    fn audio_capture(
+        &self,
+        spec: AudioSpec,
+        sink: PcmSink,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        audio::capture(spec, sink, ev)
+    }
+    fn audio_playback(
+        &self,
+        spec: AudioSpec,
+        src: PcmSource,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        audio::playback(spec, src, ev)
     }
 }

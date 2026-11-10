@@ -5,8 +5,11 @@
 [Unit]
 Description=Linker continuity daemon (Mac <-> Ubuntu link)
 Documentation=file://%h/.local/share/doc/linker/ubuntu.md
-After=network-online.target
+After=network-online.target pipewire.service pipewire-pulse.service
 Wants=network-online.target
+# Audio: "Linker Microphone"/"Linker Speaker" live in the user's PipeWire
+# (linkerd also retries every 2 s if PipeWire starts later or restarts).
+Wants=pipewire.service pipewire-pulse.service
 
 [Service]
 Type=simple

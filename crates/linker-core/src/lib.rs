@@ -70,6 +70,16 @@ impl Shared {
         }
     }
 
+    /// Audio "source" = the machine with the real mic + speakers (Mac);
+    /// "sink" = the machine with the virtual devices (Ubuntu).
+    pub fn is_audio_source(&self) -> bool {
+        match self.cfg.audio.role.as_str() {
+            "source" => true,
+            "sink" => false,
+            _ => cfg!(target_os = "macos"),
+        }
+    }
+
     pub fn features(&self) -> Vec<Feature> {
         let c = &self.cfg;
         let mut f = Vec::new();

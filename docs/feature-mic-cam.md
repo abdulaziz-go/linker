@@ -2,6 +2,10 @@
 
 **Feature:** F4 (flagship) · **Status:** Draft v1 · **Depends on:** Core (F0)
 
+> **Audio is implemented as designed in [feature-audio.md](feature-audio.md)**
+> (microphone Mac → Ubuntu *and* speaker Ubuntu → Mac, ported from the
+> audiobridge low-latency design). Section 3 below is the original sketch.
+
 The MacBook's camera and microphone become usable on Ubuntu as a **standard
 webcam and microphone**. Open any Ubuntu app (Zoom, Google Meet in the browser,
 OBS), pick "Linker Camera" and "Linker Microphone" in its device list, and you get

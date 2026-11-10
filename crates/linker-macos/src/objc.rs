@@ -12,6 +12,7 @@ use objc2_foundation::NSString;
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {
     pub static AVMediaTypeVideo: &'static NSString;
+    pub static AVMediaTypeAudio: &'static NSString;
 }
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {

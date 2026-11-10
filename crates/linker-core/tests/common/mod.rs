@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod audio_sim;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,8 +14,12 @@ use linker_core::{Daemon, DaemonHandle};
 use linker_platform::*;
 use tokio::sync::mpsc;
 
+pub use audio_sim::{AudioSim, Kind as AudioKind};
+
+/// Simulated real-time audio devices (see `audio_sim`).
 #[derive(Default)]
 pub struct MockState {
+    pub audio: Arc<AudioSim>,
     pub clip_tx: Option<mpsc::Sender<ClipboardChange>>,
     pub clip_written: Vec<ClipboardContent>,
     pub notif_tx: Option<mpsc::Sender<Notification>>,
@@ -183,6 +189,42 @@ impl PlatformBackend for Mock {
     fn camera_sink(&self, _p: CameraParams) -> Cap<Box<dyn CameraSink>> {
         Ok(Box::new(Sink(self.clone())))
     }
+    fn audio_capture(
+        &self,
+        spec: AudioSpec,
+        sink: PcmSink,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        let a = self.st().audio.clone();
+        audio_sim::open_producer(a, AudioKind::Capture, spec, sink, ev)
+    }
+    fn audio_playback(
+        &self,
+        spec: AudioSpec,
+        src: PcmSource,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        let a = self.st().audio.clone();
+        audio_sim::open_consumer(a, AudioKind::Playback, spec, src, ev)
+    }
+    fn virtual_mic(
+        &self,
+        spec: AudioSpec,
+        src: PcmSource,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        let a = self.st().audio.clone();
+        audio_sim::open_consumer(a, AudioKind::VirtualMic, spec, src, ev)
+    }
+    fn virtual_speaker(
+        &self,
+        spec: AudioSpec,
+        sink: PcmSink,
+        ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        let a = self.st().audio.clone();
+        audio_sim::open_producer(a, AudioKind::VirtualSpeaker, spec, sink, ev)
+    }
 }
 
 pub fn free_port() -> u16 {
@@ -203,6 +245,7 @@ pub struct Node {
 }
 
 pub struct NodeSpec {
+    pub audio_role: &'static str,
     pub name: &'static str,
     pub key_pem: String,
     pub port: u16,
@@ -229,6 +272,7 @@ pub fn spawn(spec: NodeSpec) -> Node {
     cfg.kvm.role = spec.kvm_role;
     cfg.camera.role = spec.camera_role.into();
     cfg.camera.mode = CameraMode::OnDemand;
+    cfg.audio.role = spec.audio_role.into();
     cfg.clipboard.receive_dir = Some(dir.path().join("recv"));
     let id = identity(&spec.key_pem, spec.name);
     let device_id = id.device_id.clone();
@@ -269,6 +313,62 @@ pub async fn wait_for(what: &str, timeout: Duration, mut f: impl FnMut() -> bool
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("timed out waiting for: {what}");
+}
+
+/// Two mock backends whose audio simulators share one marker store, so
+/// capture → playout latency can be measured across the two nodes.
+pub fn mock_pair() -> (Mock, Mock) {
+    let a = Mock::default();
+    let b = Mock::default();
+    let shared = Arc::new(AudioSim::sharing_markers_with(&a.st().audio));
+    b.st().audio = shared;
+    (a, b)
+}
+
+/// Spawn with an explicit mock backend (e.g. to keep audio-device state
+/// across a restart of the same node).
+pub fn spawn_with(spec: NodeSpec, mock: Mock, tweak: impl FnOnce(&mut Config)) -> Node {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config {
+        port: spec.port,
+        mdns: false,
+        broadcast: false,
+        static_peers: vec![format!("127.0.0.1:{}", spec.peer_port)],
+        not_found_grace_secs: 2,
+        ..Default::default()
+    };
+    cfg.kvm.role = spec.kvm_role;
+    cfg.camera.role = spec.camera_role.into();
+    cfg.camera.mode = CameraMode::OnDemand;
+    cfg.audio.role = spec.audio_role.into();
+    cfg.clipboard.receive_dir = Some(dir.path().join("recv"));
+    tweak(&mut cfg);
+    let id = identity(&spec.key_pem, spec.name);
+    let device_id = id.device_id.clone();
+    let trust = Arc::new(Trust::ephemeral(spec.paired_with.map(|(pid, pname)| {
+        PairedPeer {
+            device_id: pid,
+            device_name: pname,
+            device_type: "test".into(),
+            paired_at_ms: 0,
+        }
+    })));
+    let paths = Paths::in_dir(dir.path().to_path_buf(), None);
+    let d = Daemon::with_parts(cfg, paths, Arc::new(mock.clone()), id, trust, false);
+    let handle = d.handle();
+    let task = tokio::spawn(async move {
+        if let Err(e) = d.run().await {
+            eprintln!("daemon exited: {e:#}");
+        }
+    });
+    Node {
+        mock,
+        handle,
+        task,
+        id: device_id,
+        port: spec.port,
+        _dir: dir,
+    }
 }
 
 pub fn init_tracing() {

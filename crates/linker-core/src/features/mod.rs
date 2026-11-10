@@ -2,6 +2,7 @@
 //! up/down via `Shared::watch_link`, and degrades to "unsupported" (keeping
 //! the rest of the daemon running) when its OS facility is missing.
 
+pub mod audio;
 pub mod camera;
 pub mod clipboard;
 pub mod kvm;
@@ -22,11 +23,14 @@ pub fn spawn_all(shared: Arc<Shared>, rx: RouterRx) {
         kvm,
         camera,
         camera_dgram,
+        audio,
+        audio_dgram,
     } = rx;
     tokio::spawn(clipboard::run(shared.clone(), clipboard, clipboard_bulk));
     tokio::spawn(notify::run(shared.clone(), notify));
     tokio::spawn(kvm::run(shared.clone(), kvm));
-    tokio::spawn(camera::run(shared, camera, camera_dgram));
+    tokio::spawn(camera::run(shared.clone(), camera, camera_dgram));
+    tokio::spawn(audio::run(shared, audio, audio_dgram));
 }
 
 /// Keep a router channel drained when its feature is disabled, so the

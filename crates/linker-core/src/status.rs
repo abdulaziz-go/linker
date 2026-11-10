@@ -38,6 +38,45 @@ pub struct CameraStats {
     pub device: String,
 }
 
+/// Live statistics of one audio stream on this machine.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioStats {
+    /// "mic" or "speaker".
+    pub stream: String,
+    /// "send" (this machine captures + encodes) or "recv" (decodes + plays).
+    pub direction: String,
+    pub state: String,
+    /// Local device / virtual node.
+    pub device: String,
+    /// Native rate of the local device.
+    pub sample_rate: u32,
+    pub bitrate_kbps: u32,
+    pub frame_ms: f64,
+    pub redundancy: u8,
+    /// Receiver view (for "send" streams: as reported by the peer).
+    pub buffer_ms: u32,
+    pub target_ms: u32,
+    pub peak_gap_ms: u32,
+    pub recovered: u64,
+    pub plc: u64,
+    pub late: u64,
+    pub underruns: u64,
+    pub trims: u64,
+    pub quiet_skips: u64,
+    pub speed_pct: f64,
+    pub loss_permille: u32,
+    /// Capture → playout latency, ms (network part measured with the
+    /// heartbeat clock offset + buffer + codec + device period).
+    pub latency_ms: f64,
+    /// Largest gap between local audio callbacks in the last window, ms.
+    pub callback_gap_ms: f64,
+    /// Sender view.
+    pub packets_per_s: f64,
+    pub kbps: f64,
+    pub peak_dbfs: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status {
     pub version: String,
@@ -50,6 +89,9 @@ pub struct Status {
     pub pairing_open: bool,
     pub features: BTreeMap<String, String>,
     pub camera: Option<CameraStats>,
+    /// One entry per audio stream that is set up on this machine.
+    #[serde(default)]
+    pub audio: Vec<AudioStats>,
 }
 
 pub struct StatusBoard(Mutex<Status>);
@@ -67,6 +109,7 @@ impl StatusBoard {
             pairing_open: false,
             features: BTreeMap::new(),
             camera: None,
+            audio: Vec::new(),
         }))
     }
 
@@ -86,6 +129,19 @@ impl StatusBoard {
         if changed {
             tracing::info!(feature = name, health = %health, "feature health");
         }
+    }
+
+    /// Insert or replace the stats of one audio stream.
+    pub fn audio(&self, a: AudioStats) {
+        self.update(
+            |s| match s.audio.iter_mut().find(|x| x.stream == a.stream) {
+                Some(x) => *x = a,
+                None => {
+                    s.audio.push(a);
+                    s.audio.sort_by(|x, y| x.stream.cmp(&y.stream));
+                }
+            },
+        );
     }
 
     pub fn link(&self, state: LinkState) {
@@ -155,5 +211,104 @@ pub fn render(s: &Status) -> String {
             c.device
         );
     }
+    for a in &s.audio {
+        let _ = writeln!(o, "{}", render_audio(a));
+    }
     o
+}
+
+/// One audio stream in the style of audiobridge's receiver stats line.
+pub fn render_audio(a: &AudioStats) -> String {
+    let head = format!("audio {:<8}: {} {}", a.stream, a.direction, a.state);
+    let codec = format!(
+        "{} kbps {} ms x{}",
+        a.bitrate_kbps,
+        a.frame_ms,
+        a.redundancy as u32 + 1
+    );
+    if a.direction == "send" {
+        format!(
+            "{head} | {:.0} pkt/s {:.0} kbps | peak {} | peer buf {}ms (target {}) PLC {} underruns {} | {codec} | latency {:.0} ms | {}",
+            a.packets_per_s, a.kbps, a.peak_dbfs, a.buffer_ms, a.target_ms, a.plc, a.underruns, a.latency_ms, a.device
+        )
+    } else {
+        format!(
+            "{head} | buf {:3}ms (target {:3}) | gap {:3}ms | recovered {} PLC {} late {} | underruns {} trims {} | speed {:+.1}% | loss {:.1}% | {codec} | latency {:.0} ms | cb {:.1}ms | {}",
+            a.buffer_ms,
+            a.target_ms,
+            a.peak_gap_ms,
+            a.recovered,
+            a.plc,
+            a.late,
+            a.underruns,
+            a.trims,
+            a.speed_pct,
+            a.loss_permille as f64 / 10.0,
+            a.latency_ms,
+            a.callback_gap_ms,
+            a.device
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_entries_replace_by_stream() {
+        let b = StatusBoard::new("id".into(), "n".into(), "p".into());
+        b.audio(AudioStats {
+            stream: "speaker".into(),
+            ..Default::default()
+        });
+        b.audio(AudioStats {
+            stream: "mic".into(),
+            buffer_ms: 1,
+            ..Default::default()
+        });
+        b.audio(AudioStats {
+            stream: "mic".into(),
+            buffer_ms: 9,
+            ..Default::default()
+        });
+        let s = b.snapshot();
+        assert_eq!(s.audio.len(), 2);
+        assert_eq!(s.audio[0].stream, "mic");
+        assert_eq!(s.audio[0].buffer_ms, 9);
+    }
+
+    #[test]
+    fn render_lines() {
+        let recv = render_audio(&AudioStats {
+            stream: "mic".into(),
+            direction: "recv".into(),
+            state: "playing".into(),
+            buffer_ms: 12,
+            target_ms: 10,
+            speed_pct: 0.25,
+            ..Default::default()
+        });
+        assert!(recv.contains("buf  12ms (target  10)"), "{recv}");
+        assert!(
+            recv.contains("speed +0.2%") || recv.contains("speed +0.3%"),
+            "{recv}"
+        );
+        let send = render_audio(&AudioStats {
+            stream: "speaker".into(),
+            direction: "send".into(),
+            peak_dbfs: "-inf dBFS".into(),
+            ..Default::default()
+        });
+        assert!(send.contains("peak -inf dBFS"), "{send}");
+    }
+
+    #[test]
+    fn old_status_json_without_audio_still_parses() {
+        let b = StatusBoard::new("id".into(), "n".into(), "p".into());
+        let mut v = serde_json::to_value(b.snapshot()).unwrap();
+        v.as_object_mut().unwrap().remove("audio");
+        let s: Status = serde_json::from_value(v).unwrap();
+        assert!(s.audio.is_empty());
+    }
 }

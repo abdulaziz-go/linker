@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# PipeWire audio backend on Linux (see crates/linker-linux/Cargo.toml).
+default = ["pipewire-audio"]
+pipewire-audio = ["linker-linux/audio"]
+
 [[bin]]
 name = "linkerd"
 path = "src/main.rs"
@@ -12,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 linker-core.workspace = true
 linker-platform.workspace = true
+linker-audio = { workspace = true, features = ["codec"] }
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

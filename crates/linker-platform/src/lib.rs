@@ -181,6 +181,79 @@ pub trait CameraSink: Send {
 }
 
 // ---------------------------------------------------------------------------
+// Audio
+// ---------------------------------------------------------------------------
+
+/// Sample rate of all PCM crossing the audio API.
+pub const AUDIO_RATE: u32 = 48_000;
+/// Interleaved channels of all PCM crossing the audio API.
+pub const AUDIO_CHANNELS: usize = 2;
+
+/// Which device/node to open and how.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioSpec {
+    /// Physical device (macOS: device name; Linux: PipeWire `target.object`)
+    /// or, for virtual devices, the PipeWire `node.name`. `None` = default.
+    pub device: Option<String>,
+    /// Human readable name of a virtual device ("Linker Microphone").
+    pub description: String,
+    /// Requested callback period in ms (2.67 ≈ 128 frames at 48 kHz).
+    pub period_ms: f64,
+}
+
+impl Default for AudioSpec {
+    fn default() -> Self {
+        AudioSpec {
+            device: None,
+            description: String::new(),
+            period_ms: 2.67,
+        }
+    }
+}
+
+/// Receives captured PCM: 48 kHz interleaved stereo `i16`, any length.
+/// Called on the audio thread — must not block.
+pub type PcmSink = Box<dyn FnMut(&[i16]) + Send>;
+/// Fills a playback buffer completely with 48 kHz interleaved stereo `i16`.
+/// Called on the real-time audio thread — must not block.
+pub type PcmSource = Box<dyn FnMut(&mut [i16]) + Send>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AudioEvent {
+    /// The stream died (device removed/changed, permission denied, audio
+    /// server restarted, …). The owner drops it and reopens later.
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AudioStreamInfo {
+    /// Device / node actually opened.
+    pub device: String,
+    /// Native rate of the device (the API side is always 48 kHz).
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Callback period in frames, if known.
+    pub period_frames: u32,
+    /// Device latency reported by the OS (ms), if known.
+    pub device_latency_ms: f64,
+}
+
+/// A running audio stream (capture, playback or virtual device). Dropping
+/// it stops the stream and, for virtual devices, removes the device.
+pub trait AudioStream: Send {
+    fn info(&self) -> AudioStreamInfo;
+    /// Virtual devices: some application is connected right now (the node
+    /// is being scheduled). Physical streams: always true while running.
+    fn active(&self) -> bool {
+        true
+    }
+    /// Largest gap between two callbacks since the previous call, ms.
+    fn take_max_callback_gap_ms(&self) -> f64 {
+        0.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The backend trait
 // ---------------------------------------------------------------------------
 
@@ -259,6 +332,46 @@ pub trait PlatformBackend: Send + Sync + 'static {
     }
     fn camera_sink(&self, _params: CameraParams) -> Cap<Box<dyn CameraSink>> {
         Err(Unsupported::new("no virtual camera sink on this platform"))
+    }
+
+    // --- audio ------------------------------------------------------------
+    /// Capture from a physical input (macOS: the microphone).
+    fn audio_capture(
+        &self,
+        _spec: AudioSpec,
+        _sink: PcmSink,
+        _ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        Err(Unsupported::new("no audio capture on this platform"))
+    }
+    /// Play to a physical output (macOS: the speakers / headphones).
+    fn audio_playback(
+        &self,
+        _spec: AudioSpec,
+        _src: PcmSource,
+        _ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        Err(Unsupported::new("no audio playback on this platform"))
+    }
+    /// Create a virtual microphone other apps can record from (Ubuntu:
+    /// PipeWire `Audio/Source` "Linker Microphone"), fed by `src`.
+    fn virtual_mic(
+        &self,
+        _spec: AudioSpec,
+        _src: PcmSource,
+        _ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        Err(Unsupported::new("no virtual microphone on this platform"))
+    }
+    /// Create a virtual speaker other apps can play to (Ubuntu: PipeWire
+    /// `Audio/Sink` "Linker Speaker"); what they play is delivered to `sink`.
+    fn virtual_speaker(
+        &self,
+        _spec: AudioSpec,
+        _sink: PcmSink,
+        _ev: mpsc::Sender<AudioEvent>,
+    ) -> Cap<Box<dyn AudioStream>> {
+        Err(Unsupported::new("no virtual speaker on this platform"))
     }
 }
 

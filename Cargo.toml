@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/linker-proto",
+    "crates/linker-audio",
     "crates/linker-platform",
     "crates/linker-core",
     "crates/linker-linux",
@@ -19,8 +20,9 @@ license = "MIT OR Apache-2.0"
 linker-proto = { path = "crates/linker-proto" }
 linker-platform = { path = "crates/linker-platform" }
 linker-core = { path = "crates/linker-core" }
-linker-linux = { path = "crates/linker-linux" }
+linker-linux = { path = "crates/linker-linux", default-features = false }
 linker-macos = { path = "crates/linker-macos" }
+linker-audio = { path = "crates/linker-audio", default-features = false }
 
 anyhow = "1"
 thiserror = "2"
@@ -34,6 +36,10 @@ sha2 = "0.10"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 libc = "0.2"
+
+# libopus must run in real time even in debug builds (tests, `cargo run`).
+[profile.dev.package.opusic-sys]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

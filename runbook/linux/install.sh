@@ -29,9 +29,13 @@ if [[ $DO_SYSTEM -eq 1 ]]; then
   say "System setup (sudo): packages, kernel modules, device permissions, firewall"
   sudo -v
 
-  say "Installing packages: build tools, v4l2loopback, v4l-utils, libsecret-tools"
+  say "Installing packages: build tools, v4l2loopback, v4l-utils, libsecret-tools, PipeWire/Opus build deps"
   sudo apt-get update -qq
-  sudo apt-get install -y build-essential pkg-config curl \
+  # cmake: builds the bundled libopus · libpipewire/libspa dev + libclang:
+  # the PipeWire bindings for "Linker Microphone"/"Linker Speaker" ·
+  # pulseaudio-utils: pactl (to verify what Zoom/Chrome see).
+  sudo apt-get install -y build-essential pkg-config curl cmake \
+      libpipewire-0.3-dev libspa-0.2-dev libclang-dev pulseaudio-utils \
       v4l2loopback-dkms v4l-utils libsecret-tools "linux-headers-$(uname -r)" || {
         echo "!! package install failed — see runbook/ubuntu.md (Troubleshooting)"; exit 1; }
 
@@ -68,7 +72,13 @@ if [[ $DO_BUILD -eq 1 ]]; then
     [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
   fi
   command -v cargo >/dev/null || { echo "!! Rust not found. Install: curl https://sh.rustup.rs -sSf | sh"; exit 1; }
-  (cd "$REPO" && cargo build --release -p linker-daemon)
+  FEATURES=()
+  if ! pkg-config --atleast-version=0.3.49 libpipewire-0.3 2>/dev/null; then
+    echo "!! PipeWire >= 0.3.49 development files not found (Ubuntu 22.04 ships 0.3.48):"
+    echo "   building WITHOUT audio sharing. Camera, KVM, clipboard etc. are unaffected."
+    FEATURES=(--no-default-features)
+  fi
+  (cd "$REPO" && cargo build --release -p linker-daemon "${FEATURES[@]}")
 fi
 
 say "Installing binary → $BIN_DIR/linkerd"

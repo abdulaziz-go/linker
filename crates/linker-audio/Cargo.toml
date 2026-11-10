@@ -1,0 +1,19 @@
+[package]
+name = "linker-audio"
+description = "Low-latency audio engine (port of audiobridge): Opus codec, redundancy packets, reorder, adaptive jitter buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["codec"]
+# libopus (vendored, built with cmake). Disabled only for type-checking
+# platform crates on a foreign target.
+codec = ["dep:opus"]
+
+[dependencies]
+opus = { version = "0.4", optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+rand = { version = "0.8", features = ["small_rng"] }

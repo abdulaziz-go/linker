@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 linker-proto.workspace = true
 linker-platform.workspace = true
+linker-audio = { workspace = true, features = ["codec"] }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

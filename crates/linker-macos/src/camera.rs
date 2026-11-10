@@ -1,5 +1,7 @@
 //! Camera source: AVFoundation capture → VideoToolbox hardware H.264.
-//! **Video only. Linker never opens the microphone.**
+//! **Video only: this module never touches audio.** The microphone is a
+//! separate, independently requested capability (see `audio.rs`), opened
+//! only while the peer asks for it.
 //!
 //! Encoder settings (low latency): real-time mode, Baseline profile (no
 //! B-frames — also guarantees the Ubuntu decoder can handle it), frame
@@ -248,7 +250,14 @@ pub struct MacCamera {
 // SAFETY: raw pointer is only used for teardown.
 unsafe impl Send for MacCamera {}
 
-fn authorize(media: &NSString) -> Result<(), Unsupported> {
+/// Camera / microphone permission (TCC) for `media` (`AVMediaTypeVideo` /
+/// `AVMediaTypeAudio`): authorized → Ok; not determined → ask and wait up to
+/// 60 s for the user's answer; denied / restricted → `denied`.
+pub(crate) fn authorize(
+    media: &NSString,
+    not_granted: &str,
+    denied: &str,
+) -> Result<(), Unsupported> {
     let cls = class("AVCaptureDevice").map_err(Unsupported::from)?;
     // SAFETY: standard AVFoundation API.
     let status: isize = unsafe { msg_send![cls, authorizationStatusForMediaType: media] };
@@ -260,15 +269,15 @@ fn authorize(media: &NSString) -> Result<(), Unsupported> {
                 let _ = tx.send(granted.as_bool());
             });
             // SAFETY: standard AVFoundation API; the block is copied by the callee.
-            let _: () = unsafe { msg_send![cls, requestAccessForMediaType: media, completionHandler: &*block] };
+            let _: () = unsafe {
+                msg_send![cls, requestAccessForMediaType: media, completionHandler: &*block]
+            };
             match rx.recv_timeout(Duration::from_secs(60)) {
                 Ok(true) => Ok(()),
-                _ => Err(Unsupported::new("camera access was not granted")),
+                _ => Err(Unsupported::new(not_granted)),
             }
         }
-        _ => Err(Unsupported::new(
-            "camera permission denied — enable linkerd in System Settings → Privacy & Security → Camera",
-        )),
+        _ => Err(Unsupported::new(denied)),
     }
 }
 
@@ -360,7 +369,12 @@ pub fn start(p: CameraParams, tx: mpsc::Sender<CameraEvent>) -> Cap<Box<dyn Came
         // SAFETY: standard AVFoundation calls; all objects are retained.
         unsafe {
             let media: &NSString = crate::objc::AVMediaTypeVideo;
-            authorize(media).map_err(|e| anyhow::anyhow!(e.0))?;
+            authorize(
+                media,
+                "camera access was not granted",
+                "camera permission denied — enable linkerd in System Settings → Privacy & Security → Camera",
+            )
+            .map_err(|e| anyhow::anyhow!(e.0))?;
             let dev_cls = class("AVCaptureDevice")?;
             let device: Option<Retained<AnyObject>> =
                 msg_send![dev_cls, defaultDeviceWithMediaType: media];

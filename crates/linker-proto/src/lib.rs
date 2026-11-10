@@ -19,7 +19,9 @@
 //! never breaks an older one. Payload structs are only ever *extended* by
 //! introducing a new `kind`; existing kinds are frozen once released.
 //!
-//! Camera media uses QUIC datagrams with the fixed binary header in [`media`].
+//! Camera media uses QUIC datagrams with the fixed binary header in [`media`];
+//! audio datagrams start with a different first byte (see `linker-audio`'s
+//! `proto` module), so both share the connection's datagram channel.
 
 pub mod keycode;
 pub mod media;
@@ -300,6 +302,75 @@ pub struct CamFeedback {
     pub request_keyframe: bool,
 }
 
+/// Which audio stream a message is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AudioStream {
+    /// Mac microphone → Ubuntu virtual source "Linker Microphone".
+    Mic,
+    /// Ubuntu virtual sink "Linker Speaker" → Mac default output.
+    Speaker,
+}
+
+impl AudioStream {
+    pub fn name(self) -> &'static str {
+        match self {
+            AudioStream::Mic => "mic",
+            AudioStream::Speaker => "speaker",
+        }
+    }
+}
+
+/// Receiver → sender: start sending `stream` with these encoder settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStart {
+    pub stream: AudioStream,
+    /// Opus bitrate; 0 = automatic (sender adapts from feedback within
+    /// `min_bitrate_kbps..=max_bitrate_kbps`).
+    pub bitrate_kbps: u32,
+    pub min_bitrate_kbps: u32,
+    pub max_bitrate_kbps: u32,
+    /// Opus frame duration in 1/10 ms (25, 50, 100 or 200).
+    pub frame_ms_x10: u16,
+    /// Previous frames repeated in every packet (0..=3).
+    pub redundancy: u8,
+    /// Opus complexity 0..=10.
+    pub complexity: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStop {
+    pub stream: AudioStream,
+}
+
+/// Sender → receiver: state of an audio stream's capture side.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStatus {
+    pub stream: AudioStream,
+    pub state: CamState,
+    pub detail: String,
+    /// Native rate of the capture device (the stream itself is 48 kHz).
+    pub sample_rate: u32,
+    /// Current Opus bitrate (re-sent whenever automatic mode changes it).
+    pub bitrate_kbps: u32,
+}
+
+/// Receiver → sender: quality report, about once per second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioFeedback {
+    pub stream: AudioStream,
+    /// Frames that never arrived in any packet (Opus PLC filled them), 1/1000.
+    pub plc_permille: u16,
+    /// Datagrams missing in the report window, 1/1000 (before redundancy).
+    pub loss_permille: u16,
+    pub buffer_ms: u16,
+    pub target_ms: u16,
+    pub peak_gap_ms: u16,
+    /// Underruns since the previous report.
+    pub underruns: u16,
+    /// Median capture → playout latency, ms (clock-offset corrected).
+    pub latency_ms: u16,
+}
+
 // ---------------------------------------------------------------------------
 // Message enum with stable kind tags
 // ---------------------------------------------------------------------------
@@ -374,6 +445,10 @@ messages! {
     41 => CamStop(CamStop),
     42 => CamStatus(CamStatus),
     43 => CamFeedback(CamFeedback),
+    50 => AudioStart(AudioStart),
+    51 => AudioStop(AudioStop),
+    52 => AudioStatus(AudioStatus),
+    53 => AudioFeedback(AudioFeedback),
 }
 
 /// Encode a message with its `u32` big-endian length prefix, ready to be
@@ -507,6 +582,60 @@ mod tests {
             fps_received: 30,
             request_keyframe: true,
         }));
+        roundtrip(Message::AudioStart(AudioStart {
+            stream: AudioStream::Mic,
+            bitrate_kbps: 0,
+            min_bitrate_kbps: 64,
+            max_bitrate_kbps: 256,
+            frame_ms_x10: 50,
+            redundancy: 2,
+            complexity: 8,
+        }));
+        roundtrip(Message::AudioStop(AudioStop {
+            stream: AudioStream::Speaker,
+        }));
+        roundtrip(Message::AudioStatus(AudioStatus {
+            stream: AudioStream::Mic,
+            state: CamState::Unavailable,
+            detail: "microphone permission denied".into(),
+            sample_rate: 44_100,
+            bitrate_kbps: 0,
+        }));
+        roundtrip(Message::AudioFeedback(AudioFeedback {
+            stream: AudioStream::Speaker,
+            plc_permille: 1,
+            loss_permille: 12,
+            buffer_ms: 9,
+            target_ms: 8,
+            peak_gap_ms: 14,
+            underruns: 0,
+            latency_ms: 21,
+        }));
+    }
+
+    #[test]
+    fn audio_kinds_are_stable() {
+        assert_eq!(
+            Message::AudioStop(AudioStop {
+                stream: AudioStream::Mic
+            })
+            .kind(),
+            51
+        );
+        assert_eq!(
+            Message::AudioFeedback(AudioFeedback {
+                stream: AudioStream::Mic,
+                plc_permille: 0,
+                loss_permille: 0,
+                buffer_ms: 0,
+                target_ms: 0,
+                peak_gap_ms: 0,
+                underruns: 0,
+                latency_ms: 0,
+            })
+            .kind(),
+            53
+        );
     }
 
     #[test]

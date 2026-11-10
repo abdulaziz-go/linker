@@ -56,6 +56,7 @@ fn paired_pair() -> Pair {
         paired_with: Some((idb, "mac".into())),
         kvm_role: KvmRole::Server,
         camera_role: "sink",
+        audio_role: "sink",
     });
     let b = spawn(NodeSpec {
         name: "mac",
@@ -65,6 +66,7 @@ fn paired_pair() -> Pair {
         paired_with: Some((ida, "ubuntu".into())),
         kvm_role: KvmRole::Client,
         camera_role: "source",
+        audio_role: "source",
     });
     Pair { a, b }
 }
@@ -138,6 +140,7 @@ async fn link_heals_after_restart() {
         paired_with: Some((ida.clone(), "a".into())),
         kvm_role: KvmRole::Client,
         camera_role: "source",
+        audio_role: "source",
     };
     let a = spawn(NodeSpec {
         name: "a",
@@ -147,6 +150,7 @@ async fn link_heals_after_restart() {
         paired_with: Some((idb.clone(), "b".into())),
         kvm_role: KvmRole::Server,
         camera_role: "sink",
+        audio_role: "sink",
     });
     let b = spawn(spec_b(kb.clone()));
     wait_for("connected", T, || {
@@ -184,6 +188,7 @@ async fn unpaired_device_is_rejected() {
         paired_with: Some((p.a.id.clone(), "ubuntu".into())),
         kvm_role: KvmRole::Server,
         camera_role: "sink",
+        audio_role: "sink",
     });
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_ne!(stranger.handle.status().link, LinkState::Connected);
@@ -207,6 +212,7 @@ async fn pairing_with_sas_then_connect() {
         paired_with: None,
         kvm_role: KvmRole::Server,
         camera_role: "sink",
+        audio_role: "sink",
     });
     let b = spawn(NodeSpec {
         name: "b",
@@ -216,6 +222,7 @@ async fn pairing_with_sas_then_connect() {
         paired_with: None,
         kvm_role: KvmRole::Client,
         camera_role: "source",
+        audio_role: "source",
     });
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_ne!(
@@ -264,6 +271,7 @@ async fn pairing_rejected_does_not_pin() {
         paired_with: None,
         kvm_role: KvmRole::Server,
         camera_role: "sink",
+        audio_role: "sink",
     });
     let b = spawn(NodeSpec {
         name: "b",
@@ -273,6 +281,7 @@ async fn pairing_rejected_does_not_pin() {
         paired_with: None,
         kvm_role: KvmRole::Client,
         camera_role: "source",
+        audio_role: "source",
     });
     let mut ea = a.handle.pair_begin();
     let mut eb = b.handle.pair_begin();
