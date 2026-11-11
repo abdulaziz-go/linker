@@ -44,9 +44,85 @@ launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 say "Installing binary → $BIN_DIR/linkerd"
 mkdir -p "$BIN_DIR" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 install -m 0755 "$REPO/target/release/linkerd" "$BIN_DIR/linkerd"
-# A stable identifier helps macOS privacy settings recognise the binary.
-# (Ad-hoc signatures change on every rebuild; see runbook: "Permissions reset after update".)
-codesign --force --sign - --identifier io.linker.daemon "$BIN_DIR/linkerd"
+
+# --- Code signing -----------------------------------------------------------
+# macOS privacy (TCC) remembers a grant by the binary's *designated requirement*.
+# For an AD-HOC signature ("--sign -") that requirement is the cdhash, which
+# changes on every rebuild — so Accessibility / Full Disk Access / Microphone
+# grants are lost each upgrade. Signing with a STABLE identity makes the
+# requirement depend on the certificate instead, so grants survive rebuilds.
+#
+# Identity selection (first that works):
+#   1. $LINKER_CODESIGN_IDENTITY  (e.g. a "Developer ID Application: …" or any
+#      self-made identity you already trust)
+#   2. an existing self-signed "Linker Code Signing" identity in the login keychain
+#   3. auto-create that self-signed identity (needs a modern openssl, e.g.
+#      `brew install openssl@3`)
+#   4. fall back to ad-hoc (grants will reset on each rebuild — see runbook)
+SIGN_ID="io.linker.daemon"
+STABLE_NAME="Linker Code Signing"
+
+pick_identity() {
+  if [[ -n "${LINKER_CODESIGN_IDENTITY:-}" ]]; then
+    echo "$LINKER_CODESIGN_IDENTITY"; return 0
+  fi
+  if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$STABLE_NAME"; then
+    echo "$STABLE_NAME"; return 0
+  fi
+  return 1
+}
+
+create_stable_identity() {
+  # Prefer a real OpenSSL (LibreSSL that ships with macOS lacks -addext).
+  local OSSL=""
+  for cand in "$(brew --prefix openssl@3 2>/dev/null)/bin/openssl" \
+              "$(brew --prefix openssl 2>/dev/null)/bin/openssl" openssl; do
+    if "$cand" version 2>/dev/null | grep -qi "openssl"; then OSSL="$cand"; break; fi
+  done
+  [[ -n "$OSSL" ]] || { echo "   (no modern openssl; skipping stable identity)"; return 1; }
+
+  local tmp; tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  "$OSSL" req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout "$tmp/key.pem" -out "$tmp/cert.pem" \
+      -subj "/CN=$STABLE_NAME" \
+      -addext "basicConstraints=critical,CA:false" \
+      -addext "keyUsage=critical,digitalSignature" \
+      -addext "extendedKeyUsage=critical,codeSigning" >/dev/null 2>&1 || return 1
+  "$OSSL" pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" \
+      -out "$tmp/id.p12" -name "$STABLE_NAME" -passout pass:linker >/dev/null 2>&1 || return 1
+  # Import the identity and allow codesign to use it without prompting.
+  security import "$tmp/id.p12" -P linker \
+      -k "$HOME/Library/Keychains/login.keychain-db" \
+      -T /usr/bin/codesign >/dev/null 2>&1 || return 1
+  security find-identity -v -p codesigning 2>/dev/null | grep -qF "$STABLE_NAME"
+}
+
+IDENTITY="$(pick_identity || true)"
+if [[ -z "$IDENTITY" ]]; then
+  say "Creating a stable self-signed signing identity (\"$STABLE_NAME\")"
+  if create_stable_identity; then IDENTITY="$STABLE_NAME"; fi
+fi
+
+if [[ -n "$IDENTITY" ]]; then
+  codesign --force --options runtime --sign "$IDENTITY" --identifier "$SIGN_ID" "$BIN_DIR/linkerd"
+  echo "   Signed with stable identity: $IDENTITY"
+  echo "   → Accessibility / Full Disk Access / Microphone grants now survive rebuilds."
+else
+  codesign --force --sign - --identifier "$SIGN_ID" "$BIN_DIR/linkerd"
+  cat <<'WARN'
+   !! Signed AD-HOC (no stable identity available).
+      macOS will forget linkerd's permissions on every rebuild. After each
+      upgrade you must re-grant them:
+        System Settings → Privacy & Security →
+          Accessibility, Full Disk Access, Input Monitoring, Microphone
+        Remove the old "linkerd" entry (select it, press –) and add
+        ~/.local/bin/linkerd again, then:
+          launchctl kickstart -k gui/$(id -u)/io.linker.daemon
+      To avoid this, install a modern openssl (brew install openssl@3) and
+      rerun this script, or set LINKER_CODESIGN_IDENTITY to a signing identity.
+WARN
+fi
 "$BIN_DIR/linkerd" init-config >/dev/null
 
 say "Installing LaunchAgent → $AGENT"

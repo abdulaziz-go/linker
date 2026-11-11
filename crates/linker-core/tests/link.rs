@@ -79,6 +79,27 @@ async fn connected(p: &Pair) {
     .await;
 }
 
+/// Push past the server's edge until it grabs. Retries the motion because the
+/// handoff is gated on the client having advertised readiness, which may land
+/// a beat after the link comes up (and the edge trigger is single-shot).
+async fn capture_edge(input: &tokio::sync::mpsc::Sender<LocalInput>, node: &Node) {
+    let deadline = tokio::time::Instant::now() + T;
+    while tokio::time::Instant::now() < deadline {
+        let _ = input
+            .send(LocalInput::Motion {
+                dx: 2000,
+                dy: 0,
+                pos: None,
+            })
+            .await;
+        if node.mock.st().captured {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("server never grabbed the edge");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handshake_and_heartbeat() {
     init_tracing();
@@ -497,15 +518,7 @@ async fn kvm_handoff_and_dead_mans_switch() {
     let input = p.a.mock.st().input_tx.clone().unwrap();
 
     // Push past the right edge of A's 1000x1000 screen.
-    input
-        .send(LocalInput::Motion {
-            dx: 2000,
-            dy: 0,
-            pos: None,
-        })
-        .await
-        .unwrap();
-    wait_for("A captured", T, || p.a.mock.st().captured).await;
+    capture_edge(&input, &p.a).await;
     wait_for("B warped", T, || {
         p.b.mock
             .st()
@@ -556,15 +569,7 @@ async fn kvm_handoff_and_dead_mans_switch() {
     wait_for("A released", T, || !p.a.mock.st().captured).await;
 
     // Capture again, hold a key, then drop the link: A must ungrab.
-    input
-        .send(LocalInput::Motion {
-            dx: 2000,
-            dy: 0,
-            pos: None,
-        })
-        .await
-        .unwrap();
-    wait_for("A captured again", T, || p.a.mock.st().captured).await;
+    capture_edge(&input, &p.a).await;
     input
         .send(LocalInput::Key {
             hid: 0xE1,
@@ -590,15 +595,7 @@ async fn kvm_panic_hotkey_releases() {
     connected(&p).await;
     wait_for("capture", T, || p.a.mock.st().input_tx.is_some()).await;
     let input = p.a.mock.st().input_tx.clone().unwrap();
-    input
-        .send(LocalInput::Motion {
-            dx: 2000,
-            dy: 0,
-            pos: None,
-        })
-        .await
-        .unwrap();
-    wait_for("captured", T, || p.a.mock.st().captured).await;
+    capture_edge(&input, &p.a).await;
     for hid in [0xE0u16, 0xE2, 0xE1, 0x29] {
         input
             .send(LocalInput::Key { hid, pressed: true })
@@ -606,6 +603,120 @@ async fn kvm_panic_hotkey_releases() {
             .unwrap();
     }
     wait_for("panic release", T, || !p.a.mock.st().captured).await;
+}
+
+/// A client that cannot inject (e.g. macOS Accessibility not trusted after a
+/// rebuild) advertises "not ready"; the server must NEVER grab, so the user is
+/// never locked out. This is the exact regression that froze both machines.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kvm_not_ready_client_is_never_granted_control() {
+    init_tracing();
+    let (ka, kb) = (
+        Identity::generate_pem().unwrap(),
+        Identity::generate_pem().unwrap(),
+    );
+    let (ida, idb) = (
+        identity(&ka, "ubuntu").device_id,
+        identity(&kb, "mac").device_id,
+    );
+    let (pa, pb) = (free_port(), free_port());
+    let a = spawn(NodeSpec {
+        name: "ubuntu",
+        key_pem: ka,
+        port: pa,
+        peer_port: pb,
+        paired_with: Some((idb, "mac".into())),
+        kvm_role: KvmRole::Server,
+        camera_role: "sink",
+        audio_role: "sink",
+    });
+    let mock_b = Mock::default();
+    mock_b.st().inject_unavailable = true; // Mac can't inject
+    let b = spawn_with(
+        NodeSpec {
+            name: "mac",
+            key_pem: kb,
+            port: pb,
+            peer_port: pa,
+            paired_with: Some((ida, "ubuntu".into())),
+            kvm_role: KvmRole::Client,
+            camera_role: "source",
+            audio_role: "source",
+        },
+        mock_b.clone(),
+        |_| {},
+    );
+    wait_for("connected", T, || {
+        a.handle.status().link == LinkState::Connected
+            && b.handle.status().link == LinkState::Connected
+    })
+    .await;
+    wait_for("capture", T, || a.mock.st().input_tx.is_some()).await;
+    let input = a.mock.st().input_tx.clone().unwrap();
+    // Push hard past the edge, repeatedly — it must still never grab.
+    for _ in 0..3 {
+        input
+            .send(LocalInput::Motion {
+                dx: 2000,
+                dy: 0,
+                pos: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !a.mock.st().captured,
+        "server must never grab a client that cannot inject"
+    );
+}
+
+/// Injection fails mid-session (Accessibility revoked while captured): the
+/// client reports the error, the server releases at once and shows a banner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kvm_runtime_injection_failure_releases_and_notifies() {
+    init_tracing();
+    let p = paired_pair();
+    connected(&p).await;
+    wait_for("capture", T, || p.a.mock.st().input_tx.is_some()).await;
+    let input = p.a.mock.st().input_tx.clone().unwrap();
+    capture_edge(&input, &p.a).await;
+
+    // Revoke the Mac's ability to inject, then force a forwarded event.
+    p.b.mock.st().inject_fail = true;
+    input
+        .send(LocalInput::Key {
+            hid: 0x04,
+            pressed: true,
+        })
+        .await
+        .unwrap();
+    wait_for("server released on injection error", T, || {
+        !p.a.mock.st().captured
+    })
+    .await;
+    wait_for("forced-release notification", T, || {
+        p.a.mock
+            .st()
+            .shown
+            .iter()
+            .any(|n| n.title == "KVM released" && n.body.contains("not accepting input"))
+    })
+    .await;
+}
+
+/// Daemon shutdown (SIGTERM path) while captured must release the devices.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kvm_server_shutdown_releases_capture() {
+    init_tracing();
+    let p = paired_pair();
+    connected(&p).await;
+    wait_for("capture", T, || p.a.mock.st().input_tx.is_some()).await;
+    let input = p.a.mock.st().input_tx.clone().unwrap();
+    capture_edge(&input, &p.a).await;
+    p.a.handle.shutdown();
+    wait_for("released on shutdown", T, || !p.a.mock.st().captured).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

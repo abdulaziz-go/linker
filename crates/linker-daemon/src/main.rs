@@ -343,23 +343,36 @@ async fn check(paths: &Paths) -> anyhow::Result<()> {
         ),
     }
 
-    // KVM
-    match cfg.kvm_role() {
-        linker_core::config::KvmRole::Client => match b.input_injector() {
-            Ok(i) => ok(
-                "kvm inject (client)",
-                format!("screen {:?}", i.screen_size()),
-            ),
-            Err(e) => bad("kvm inject (client)", e.0),
-        },
-        _ => {
-            let (itx, _irx) = tokio::sync::mpsc::channel(16);
-            match b.input_capture(itx) {
-                Ok(c) => ok(
-                    "kvm capture (server)",
-                    format!("screen {:?}", c.screen_size()),
-                ),
-                Err(e) => bad("kvm capture (server)", e.0),
+    // KVM — report the DAEMON's own permission state. The daemon tracks live
+    // readiness in its "kvm" feature health; asking it over the socket is
+    // authoritative. Probing here in the CLI process is misleading on macOS,
+    // where the OS attributes the Accessibility check to Terminal, not linkerd.
+    let dstatus = daemon_status(paths).await;
+    match dstatus.as_ref().and_then(|s| s.features.get("kvm")) {
+        Some(h) if kvm_health_ok(h) => ok("kvm (daemon)", h.clone()),
+        Some(h) => bad("kvm (daemon)", h.clone()),
+        None => {
+            // Daemon not running yet: fall back to a local probe, clearly
+            // labelled as the CLI process (macOS attributes it to Terminal).
+            let note = "daemon not running — probed in THIS process";
+            match cfg.kvm_role() {
+                linker_core::config::KvmRole::Client => match b.input_injector() {
+                    Ok(i) => ok(
+                        "kvm inject (cli)",
+                        format!("screen {:?} ({note})", i.screen_size()),
+                    ),
+                    Err(e) => bad("kvm inject (cli)", format!("{} ({note})", e.0)),
+                },
+                _ => {
+                    let (itx, _irx) = tokio::sync::mpsc::channel(16);
+                    match b.input_capture(itx) {
+                        Ok(c) => ok(
+                            "kvm capture (cli)",
+                            format!("screen {:?} ({note})", c.screen_size()),
+                        ),
+                        Err(e) => bad("kvm capture (cli)", format!("{} ({note})", e.0)),
+                    }
+                }
             }
         }
     }
@@ -434,20 +447,31 @@ async fn check(paths: &Paths) -> anyhow::Result<()> {
         println!("  [ -- ] {:<22} disabled in config", "audio");
     }
 
-    // Daemon reachable?
-    match ControlClient::connect(&paths.socket).await {
-        Ok(mut c) => {
+    // Daemon reachable? (reuse the snapshot fetched for the KVM check)
+    match &dstatus {
+        Some(s) => {
             ok("daemon", format!("running ({})", paths.socket.display()));
-            if c.send(&Request::Status).await.is_ok() {
-                if let Ok(Some(v)) = c.recv().await {
-                    if let Ok(s) = serde_json::from_value::<linker_core::status::Status>(v) {
-                        audio_check::live(&s);
-                    }
-                }
-            }
+            audio_check::live(s);
         }
-        Err(_) => println!("  [ -- ] {:<22} not running", "daemon"),
+        None => println!("  [ -- ] {:<22} not running", "daemon"),
     }
     tokio::time::sleep(Duration::from_millis(300)).await; // let async probes print
     Ok(())
+}
+
+/// Fetch the running daemon's status over the control socket, if reachable.
+async fn daemon_status(paths: &Paths) -> Option<linker_core::status::Status> {
+    let mut c = ControlClient::connect(&paths.socket).await.ok()?;
+    c.send(&Request::Status).await.ok()?;
+    let v = c.recv().await.ok()??;
+    serde_json::from_value(v).ok()
+}
+
+/// Classify a daemon "kvm" feature-health string as OK or a problem.
+fn kvm_health_ok(h: &str) -> bool {
+    let h = h.to_lowercase();
+    !(h.contains("not ready")
+        || h.contains("unsupported")
+        || h.contains("failed")
+        || h.contains("disabled"))
 }

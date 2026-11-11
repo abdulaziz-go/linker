@@ -100,6 +100,9 @@ impl PlatformBackend for MacBackend {
     fn input_injector(&self) -> Cap<Box<dyn InputInjector>> {
         input::injector()
     }
+    fn input_injection_ready(&self) -> Cap<()> {
+        input::injection_ready()
+    }
 
     fn camera_source(
         &self,

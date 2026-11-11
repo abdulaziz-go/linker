@@ -147,15 +147,43 @@ layout and is exchanged once at connect.
 
 ### 3.5 Reliability and safety
 
+The overriding invariant: **the user must never be locked out — any problem
+returns input to the server immediately.** The handoff is therefore gated and
+acknowledged, not fire-and-forget, and the grab is wrapped in an RAII guard that
+ungrabs on every exit path (normal, task error/panic, shutdown).
+
+- **Readiness gating:** the client advertises `KvmReady{ready}` and the server
+  **never hands off unless the client has affirmatively said it can inject**
+  (macOS: Accessibility trusted and event posting works). The client re-checks
+  at runtime and re-advertises on every change, so a missing/added permission is
+  reflected within ~2 s. *(This closes the original freeze: a Mac that lost
+  Accessibility after a rebuild still advertised the KVM feature, so the server
+  grabbed and forwarded into a void. Advertising the role is no longer the same
+  as being ready.)*
+- **Handoff acknowledgement:** after `Enter` the server waits ~400 ms for an
+  explicit `KvmAck` and **grabs the devices only after the ack**. No ack → the
+  handoff is aborted, input stays local, and a banner explains why.
+- **Liveness while captured:** the client sends a periodic `KvmHeartbeat`
+  (~250 ms) and a `KvmError{reason}` on any injection failure. The server
+  releases if heartbeats stop for ~1 s or an error is reported.
 - **Dead-man's switch:** if the control link drops while captured, the server
-  immediately **ungrabs** local devices and restores the local cursor, so the
-  user is never locked out of their own machine. The client clears any held
-  keys/buttons on `Leave` or link loss (prevents a "stuck key").
-- **Panic hotkey:** a configurable hotkey (e.g. the server handles it locally
-  even while captured) force-releases capture.
+  immediately **ungrabs** and restores the local cursor. The client clears any
+  held keys/buttons on `Leave` or link loss (prevents a "stuck key").
+- **Client-independent return:** the server tracks the virtual cursor itself, so
+  moving back across the edge returns control even if the client never sends
+  `Return`.
+- **Panic hotkey:** a configurable hotkey (default Ctrl+Alt+Shift+Esc, matching
+  either hand) is detected straight from the evdev stream while grabbed,
+  independent of link and peer state, and force-releases capture.
+- **Notifications:** every forced release shows a desktop banner naming the
+  reason (e.g. "KVM released: Mac is not accepting input (Accessibility
+  permission missing)").
 - **Ordering:** input rides reliable, ordered QUIC streams; no datagrams here.
 - **Modifier resync:** full modifier state is sent on `Enter` and cleared on
   `Leave`.
+
+New control messages (client → server): `KvmReady{ready}`, `KvmAck`,
+`KvmHeartbeat`, `KvmError{reason}`.
 
 ### 3.6 Performance
 

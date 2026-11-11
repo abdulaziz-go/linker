@@ -29,6 +29,12 @@ pub struct MockState {
     pub input_tx: Option<mpsc::Sender<LocalInput>>,
     pub captured: bool,
     pub injected: Vec<String>,
+    /// Simulate a client that cannot inject at all (e.g. macOS Accessibility
+    /// not trusted): `input_injector`/`input_injection_ready` fail.
+    pub inject_unavailable: bool,
+    /// Simulate injection failing at runtime (e.g. Accessibility revoked while
+    /// captured): the injector exists but every inject call errors.
+    pub inject_fail: bool,
     pub cam_tx: Option<mpsc::Sender<CameraEvent>>,
     pub cam_keyframe_requests: u32,
     pub sink_frames: Vec<Vec<u8>>,
@@ -59,24 +65,37 @@ impl InputCapture for MockCapture {
 }
 
 struct Inj(Mock);
+impl Inj {
+    fn guard(&self) -> anyhow::Result<()> {
+        if self.0.st().inject_fail {
+            anyhow::bail!("mock: injection failed (test)");
+        }
+        Ok(())
+    }
+}
 impl InputInjector for Inj {
     fn move_relative(&mut self, dx: i32, dy: i32) -> anyhow::Result<()> {
+        self.guard()?;
         self.0.st().injected.push(format!("move {dx} {dy}"));
         Ok(())
     }
     fn button(&mut self, b: MouseButton, p: bool) -> anyhow::Result<()> {
+        self.guard()?;
         self.0.st().injected.push(format!("button {b:?} {p}"));
         Ok(())
     }
     fn scroll(&mut self, dx: i32, dy: i32) -> anyhow::Result<()> {
+        self.guard()?;
         self.0.st().injected.push(format!("scroll {dx} {dy}"));
         Ok(())
     }
     fn key(&mut self, hid: u16, p: bool) -> anyhow::Result<()> {
+        self.guard()?;
         self.0.st().injected.push(format!("key {hid:#x} {p}"));
         Ok(())
     }
     fn warp_to(&mut self, e: Edge, r: f64) -> anyhow::Result<()> {
+        self.guard()?;
         self.0.st().injected.push(format!("warp {e:?} {r:.2}"));
         Ok(())
     }
@@ -176,7 +195,17 @@ impl PlatformBackend for Mock {
         Ok(Box::new(MockCapture(self.clone())))
     }
     fn input_injector(&self) -> Cap<Box<dyn InputInjector>> {
+        if self.st().inject_unavailable {
+            return Err(Unsupported::new("mock: injection unavailable (test)"));
+        }
         Ok(Box::new(Inj(self.clone())))
+    }
+    fn input_injection_ready(&self) -> Cap<()> {
+        if self.st().inject_unavailable {
+            Err(Unsupported::new("mock: not trusted (test)"))
+        } else {
+            Ok(())
+        }
     }
     fn camera_source(
         &self,

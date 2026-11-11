@@ -31,8 +31,10 @@ Same Wi-Fi/LAN as the Ubuntu machine (not a guest network).
 What it does (idempotent — rerun after `git pull` to upgrade):
 
 1. `cargo build --release -p linker-daemon`
-2. Installs `~/.local/bin/linkerd` and ad-hoc signs it with identifier
-   `io.linker.daemon`.
+2. Installs `~/.local/bin/linkerd` and signs it with a **stable** identity so
+   Accessibility / Full Disk Access / Microphone grants survive rebuilds
+   (see §4). If no stable identity can be made it falls back to ad-hoc and tells
+   you exactly what to re-grant after each upgrade.
 3. Writes a commented config: `~/Library/Application Support/linker/config.toml`.
 4. Installs the **LaunchAgent** `~/Library/LaunchAgents/io.linker.daemon.plist`
    (`RunAtLoad` + `KeepAlive`, GUI session only) and loads it with
@@ -75,6 +77,23 @@ Open **System Settings → Privacy & Security** and add
 | **Notifications → Script Editor** | Linker's own banners (e.g. "peer not found") | make sure *Allow notifications* is on |
 | Firewall prompt "accept incoming connections?" | inbound link | **Allow** |
 
+**Stable signing (grants survive rebuilds).** `install.sh` signs `linkerd`
+with a stable self-signed identity ("Linker Code Signing", auto-created in your
+login Keychain — needs a modern `openssl`, e.g. `brew install openssl@3`), or
+with `$LINKER_CODESIGN_IDENTITY` if you set it to your own signing identity.
+Because macOS keys a permission grant to the *signing identity* (not the
+per-build hash), your Accessibility / Full Disk Access / Microphone grants now
+persist across `git pull` + reinstall. If the installer printed a `!! Signed
+AD-HOC` warning, grants will still reset each rebuild — install `openssl@3` and
+rerun, or re-grant as it describes.
+
+**KVM is now fail-safe about this permission.** If linkerd can't inject
+(Accessibility missing/revoked), it advertises "not ready" and the Ubuntu side
+**refuses to hand over control** — so a missing grant can never freeze both
+machines. If injection fails *while* the Mac has control, it tells Ubuntu at
+once and Ubuntu releases the keyboard/mouse and shows a banner naming the
+reason.
+
 Then restart the agent so it picks everything up:
 
 ```bash
@@ -82,7 +101,11 @@ launchctl kickstart -k gui/$(id -u)/io.linker.daemon
 linkerd check
 ```
 
-`linkerd check` should show `[ OK ]` for each line. On first run it also
+`linkerd check` should show `[ OK ]` for each line. The KVM line is now reported
+as the **daemon** sees it (`kvm (daemon)`): it asks the running `linkerd` over
+its control socket, so the Accessibility result reflects *linkerd's* permission,
+not Terminal's. (If the daemon isn't running, it falls back to a local
+`kvm (cli)` probe, which macOS attributes to Terminal and is only indicative.) On first run it also
 briefly opens the camera and the microphone to trigger the Camera/Microphone
 prompts *for Terminal*; the daemon itself gets its own prompts the first time
 it streams. Audio lines look like:
@@ -150,8 +173,9 @@ linkerd status
 
 | Symptom | Fix |
 |---|---|
-| `kvm … not trusted for Accessibility` / `cannot create event tap` | Add `~/.local/bin/linkerd` to Accessibility (and Input Monitoring), then `launchctl kickstart -k gui/$(id -u)/io.linker.daemon`. |
-| **Permissions reset after updating** | Rebuilding changes the binary's ad-hoc signature, and macOS treats it as a new app. Remove linkerd from the lists (–) and add it again, then restart the agent. |
+| `kvm … not trusted for Accessibility` / `cannot create event tap` / `check` shows `kvm (daemon) … NOT READY` | Add `~/.local/bin/linkerd` to Accessibility (and Input Monitoring), then `launchctl kickstart -k gui/$(id -u)/io.linker.daemon`. Confirm with `linkerd check` — the `kvm (daemon)` line must say `ready`. Until it does, Ubuntu will (correctly) refuse to hand over control, so you are never locked out. |
+| KVM froze both machines after a rebuild (old behaviour) | Fixed: the Mac now advertises injection readiness and acks each handoff; Ubuntu only grabs after the ack and releases on any problem (heartbeat loss, injection error, link drop, panic hotkey). The usual cause was lost Accessibility after a rebuild — see *Permissions reset after updating* and *stable signing* (§4). |
+| **Permissions reset after updating** | With the default **stable signing** (§4) they shouldn't — grants are keyed to the "Linker Code Signing" identity, not the per-build hash. If `install.sh` printed `!! Signed AD-HOC`, install a modern openssl (`brew install openssl@3`) and reinstall, or set `LINKER_CODESIGN_IDENTITY`. As a one-off, remove linkerd from each Privacy list (–), add `~/.local/bin/linkerd` again, and `launchctl kickstart -k gui/$(id -u)/io.linker.daemon`. |
 | Camera: `permission denied` | System Settings → Privacy & Security → Camera → enable linkerd. If it's not listed / you clicked Don't Allow: `tccutil reset Camera`, restart the agent, open the camera from Ubuntu again and click Allow. |
 | Camera: Ubuntu shows the placeholder (gray card) | Mac asleep/lid closed, or `Busy` in Ubuntu's `linkerd status` (another app holding the camera exclusively). It resumes automatically. |
 | Microphone: Ubuntu shows `peer Unavailable (microphone permission denied …)` | System Settings → Privacy & Security → **Microphone** → enable linkerd (or Terminal when running by hand). Not listed / clicked Don't Allow: `tccutil reset Microphone`, `launchctl kickstart -k gui/$(id -u)/io.linker.daemon`, record from "Linker Microphone" on Ubuntu again and click Allow. After a rebuild, permissions may need re-granting (see *Permissions reset after updating*). |
@@ -166,3 +190,60 @@ linkerd status
 | `No route to host` in logs (macOS 15) | Local Network permission denied — enable it (above), restart the agent. |
 | Keychain prompt "linkerd wants to use your confidential information" | Click **Always Allow** (the identity key lives in your login Keychain). After a rebuild it may ask once more. |
 | Start over | `./runbook/macos/uninstall.sh --purge`, then install and pair again. |
+
+## 9. KVM fail-safe — manual test checklist
+
+Run these after any change to KVM. The invariant under test: **you must never
+be locked out — any problem returns the keyboard/mouse to Ubuntu immediately.**
+Ubuntu is the server, the Mac the client. Keep a second way in (SSH, or just
+`pkill linkerd`) handy the first time, though you shouldn't need it.
+
+Setup: both daemons running and paired; `[kvm] enabled = true` on both.
+
+On the **Mac** first confirm readiness is reported by the daemon itself:
+
+```bash
+linkerd check         # the "kvm (daemon)" line must say: ready
+linkerd status        # features: kvm → "client: ready (…)"
+```
+
+Checklist:
+
+1. **Happy path.** Push Ubuntu's pointer past the right edge → it appears on the
+   Mac, typing lands on the Mac. Move back out the Mac's left edge → control
+   returns. `linkerd status` on Ubuntu shows `kvm server: controlling …` then
+   `server: local`.
+2. **Not ready blocks handoff.** On the Mac, remove linkerd from **System
+   Settings → Privacy & Security → Accessibility** and
+   `launchctl kickstart -k gui/$(id -u)/io.linker.daemon`. `linkerd check` →
+   `kvm (daemon) … NOT READY`. Now push past the edge on Ubuntu: **control must
+   NOT cross** and Ubuntu's keyboard/mouse keep working locally. Re-grant
+   Accessibility, restart the agent, push again → it crosses. *(This is the
+   original freeze — it must no longer happen.)*
+3. **Revoke Accessibility WHILE captured.** Cross to the Mac, keep control there,
+   then on the Mac toggle linkerd **off** in Accessibility. Within ~1 s Ubuntu
+   must take back the keyboard/mouse and show a banner
+   *“KVM released: Mac is not accepting input (…)”*. Verify you can type on
+   Ubuntu immediately. (Toggle it back on to resume.)
+4. **Kill the Mac daemon while captured.** Cross to the Mac, then on the Mac
+   `pkill -9 linkerd` (simulates a crash/wedge). Ubuntu must release within ~1 s
+   (heartbeat loss / link drop) with a banner. `launchctl kickstart -k
+   gui/$(id -u)/io.linker.daemon` to restore.
+5. **Pull the network while captured.** Cross to the Mac, then disable Wi-Fi on
+   the Mac. Ubuntu releases at once (dead-man's switch).
+6. **Panic hotkey with a dead peer.** Cross to the Mac, kill the Mac daemon
+   (step 4), then on the Ubuntu keyboard press **Ctrl+Alt+Shift+Esc**. Control
+   returns to Ubuntu regardless of the peer being gone. Works with the left or
+   right Ctrl/Alt/Shift.
+7. **Return with a silent client.** Cross to the Mac, then move the Ubuntu mouse
+   straight back across the edge. Control returns even if the Mac never sends a
+   "returning" message (the server tracks the virtual cursor itself).
+8. **SIGTERM while captured.** Cross to the Mac, then on Ubuntu
+   `systemctl --user restart linker` (SIGTERM). The devices are ungrabbed before
+   exit — your keyboard/mouse keep working.
+9. **No stuck keys.** In each case above, after control returns, confirm no
+   modifier is latched on either machine (type in a text field on both; if one
+   feels held, tap that modifier once — it should not be needed).
+
+Everything that forces a release shows an Ubuntu desktop banner naming the
+reason. A clean return (step 1/7) is silent.

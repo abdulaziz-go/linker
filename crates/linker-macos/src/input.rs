@@ -275,6 +275,19 @@ struct MacInjector {
 }
 
 pub fn injector() -> Cap<Box<dyn InputInjector>> {
+    injection_ready()?;
+    Ok(Box::new(MacInjector {
+        bounds: desktop_bounds(),
+        buttons: HashSet::new(),
+        flags: Mutex::new(CGEventFlags::empty()),
+    }))
+}
+
+/// Cheap, non-destructive check that injection would work right now: a usable
+/// event source and Accessibility trust. Used by the KVM client to advertise
+/// readiness and to re-verify before acking a handoff, and to detect that the
+/// user granted (or revoked) Accessibility while the daemon is running.
+pub fn injection_ready() -> Cap<()> {
     source().map_err(Unsupported::from)?;
     // SAFETY: AXIsProcessTrusted has no preconditions.
     if !unsafe { AXIsProcessTrusted() } {
@@ -282,11 +295,7 @@ pub fn injector() -> Cap<Box<dyn InputInjector>> {
             "linkerd is not trusted for Accessibility — enable it in System Settings → Privacy & Security → Accessibility",
         ));
     }
-    Ok(Box::new(MacInjector {
-        bounds: desktop_bounds(),
-        buttons: HashSet::new(),
-        flags: Mutex::new(CGEventFlags::empty()),
-    }))
+    Ok(())
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
