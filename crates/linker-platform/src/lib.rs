@@ -321,6 +321,15 @@ pub trait PlatformBackend: Send + Sync + 'static {
     fn input_injector(&self) -> Cap<Box<dyn InputInjector>> {
         Err(Unsupported::new("input injection not available"))
     }
+    /// Cheap "can I inject right now?" check, used by the KVM client to
+    /// (re)advertise readiness and to re-verify before acknowledging a handoff
+    /// — without creating/destroying a virtual device each time. The default
+    /// is to trust an already-open injector (Linux `uinput` cannot lose
+    /// permission at runtime); platforms whose permission can be revoked while
+    /// the daemon runs (macOS Accessibility) override this with a live check.
+    fn input_injection_ready(&self) -> Cap<()> {
+        Ok(())
+    }
 
     // --- camera -----------------------------------------------------------
     fn camera_source(

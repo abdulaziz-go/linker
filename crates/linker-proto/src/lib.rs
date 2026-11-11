@@ -227,6 +227,34 @@ pub struct KvmReturn {
     pub ratio: f32,
 }
 
+/// Client → server: dynamic injection readiness. `ready` is true only when the
+/// client can really inject right now (macOS: Accessibility trusted and event
+/// posting works). Sent on link-up, re-advertised periodically, and on every
+/// change. The server never hands control to a client that is not ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvmReady {
+    pub ready: bool,
+}
+
+/// Client → server: acknowledges a [`KvmEnter`] and confirms it is now
+/// injecting. The server requires this before it grabs the local devices; no
+/// ack within the handoff timeout aborts the handoff and keeps input local.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvmAck;
+
+/// Client → server: periodic "injecting OK" heartbeat while control is on the
+/// client. If these stop arriving the server releases the grab (the client may
+/// have died or wedged without dropping the link).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvmHeartbeat;
+
+/// Client → server: injection failed (e.g. Accessibility revoked mid-session).
+/// The server releases the grab at once so the user is never locked out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvmError {
+    pub reason: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseMove {
     pub dx: i32,
@@ -441,10 +469,14 @@ messages! {
     34 => MouseButton(MouseButtonEvent),
     35 => Scroll(Scroll),
     36 => Key(KeyEvent),
+    37 => KvmReady(KvmReady),
+    38 => KvmAck(KvmAck),
+    39 => KvmHeartbeat(KvmHeartbeat),
     40 => CamStart(CamStart),
     41 => CamStop(CamStop),
     42 => CamStatus(CamStatus),
     43 => CamFeedback(CamFeedback),
+    44 => KvmError(KvmError),
     50 => AudioStart(AudioStart),
     51 => AudioStop(AudioStop),
     52 => AudioStatus(AudioStatus),
@@ -555,6 +587,12 @@ mod tests {
         }));
         roundtrip(Message::KvmLeave(KvmLeave));
         roundtrip(Message::KvmReturn(KvmReturn { ratio: 0.25 }));
+        roundtrip(Message::KvmReady(KvmReady { ready: true }));
+        roundtrip(Message::KvmAck(KvmAck));
+        roundtrip(Message::KvmHeartbeat(KvmHeartbeat));
+        roundtrip(Message::KvmError(KvmError {
+            reason: "Accessibility permission missing".into(),
+        }));
         roundtrip(Message::MouseMove(MouseMove { dx: -4, dy: 1000 }));
         roundtrip(Message::MouseButton(MouseButtonEvent {
             button: MouseButton::Right,
